@@ -1,0 +1,1297 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>教务系统 - 管理员端</title>
+    <!-- 使用更稳定的Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
+    <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+    
+    <style>
+        /* 基础样式确保页面正常显示 */
+        body { 
+            margin: 0;
+            font-family: system-ui, -apple-system, sans-serif;
+        }
+        
+        /* 确保基础颜色可用 */
+        .bg-gray-50 { background-color: #f9fafb; }
+        .bg-white { background-color: white; }
+        .bg-red-500 { background-color: #ef4444; }
+        .bg-green-500 { background-color: #10b981; }
+        .bg-blue-500 { background-color: #3b82f6; }
+        .text-white { color: white; }
+        .text-gray-600 { color: #4b5563; }
+        .text-gray-800 { color: #1f2937; }
+        .border-gray-300 { border-color: #d1d5db; }
+        .shadow-lg { box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); }
+        .rounded-lg { border-radius: 0.5rem; }
+        .fixed { position: fixed; }
+        .top-4 { top: 1rem; }
+        .right-4 { right: 1rem; }
+        .p-4 { padding: 1rem; }
+        .z-50 { z-index: 50; }
+        
+        /* 自定义颜色 */
+        .bg-primary { background-color: #3b82f6; }
+        .bg-secondary { background-color: #2563eb; }
+        .bg-accent { background-color: #10b981; }
+        .text-primary { color: #3b82f6; }
+        .text-secondary { color: #2563eb; }
+        .text-danger { color: #ef4444; }
+    </style>
+    <style>
+        .sidebar-bg {
+            background: linear-gradient(180deg, #1e293b 0%, #334155 100%);
+        }
+        .nav-item {
+            transition: all 0.3s ease;
+            background-color: #3b82f6;
+            color: white;
+            font-weight: 500;
+        }
+        .nav-item:hover {
+            background-color: #2563eb;
+            transform: translateX(4px);
+        }
+        .nav-item.active {
+            background-color: #1d4ed8;
+            color: white;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .fade-in {
+            animation: fadeIn 0.5s ease-in;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body class="bg-gray-50" x-data="adminPortal()">
+
+<script>
+function adminPortal() {
+    return {
+        currentTab: 'courses',
+        adminInfo: null,
+        courses: [],
+        sections: [],
+        teachers: [],
+        students: [],
+        departments: [],
+        courseDept: '',
+        teacherSearchKeyword: '',
+        studentSearchKeyword: '',
+        searchKeyword: '',
+        semester: '',
+        year: '',
+        currentPage: 1,
+        pageSize: 10,
+        totalItems: 0,
+        isLoading: false,
+        showAddCourseModal: false,
+        showEditCourseModal: false,
+        showAddSectionModal: false,
+        showAddTeacherModal: false,
+        showAddStudentModal: false,
+        newCourse: { course_id: '', title: '', dept_name: '', credits: '', target_grade: '', target_semester: '' },
+        editingCourse: { course_id: '', title: '', dept_name: '', credits: '', target_grade: '', target_semester: '' },
+        newSection: { course_id: '', sec_id: '', semester: '', year: '', capacity: '', building: '', room_number: '', day_of_week: '', start_period: '', end_period: '' },
+        newTeacher: { 教师ID: '', 姓名: '', 院系: '', 电话: '', 邮箱: '', 用户名: '', 密码: '' },
+        newStudent: { 学号: '', 姓名: '', 院系: '', 已修学分: 0, 入学年份: 0, 电话: '', 邮箱: '', 用户名: '', 密码: '' },
+        
+        init() {
+            // 检查登录状态
+            const adminInfo = sessionStorage.getItem('adminInfo');
+            if (!adminInfo) {
+                window.location.href = '/admin_login.html';
+                return;
+            }
+            
+            this.adminInfo = JSON.parse(adminInfo);
+            this.loadDepartments();
+            this.loadCourses();
+            this.loadTeachers();
+            this.loadStudents();
+        },
+    
+    // 加载院系列表
+    async loadDepartments() {
+        try {
+            const response = await fetch('http://127.0.0.1:8000/departments');
+            const data = await response.json();
+            
+            if (data.状态 === '成功' && data.院系列表) {
+                this.departments = data.院系列表;
+                
+                const select = document.getElementById('courseDeptSelect');
+                if (select) {
+                    select.innerHTML = '<option value="">全部院系</option>';
+                    data.院系列表.forEach(dept => {
+                        const option = document.createElement('option');
+                        option.value = dept.dept_name;
+                        option.textContent = dept.dept_name;
+                        select.appendChild(option);
+                    });
+                }
+            }
+        } catch (error) {
+            console.error('加载院系列表失败:', error);
+        }
+    },
+    
+    // 加载课程列表
+    async loadCourses() {
+        this.isLoading = true;
+        try {
+            const params = new URLSearchParams();
+            params.append('页码', this.currentPage);
+            params.append('每页数量', this.pageSize);
+            if (this.searchKeyword) params.append('搜索关键词', this.searchKeyword);
+            if (this.courseDept) params.append('院系', this.courseDept);
+            
+            const response = await fetch(`http://127.0.0.1:8000/admin/courses?${params}`);
+            const data = await response.json();
+            
+            if (data.状态 === '成功') {
+                this.courses = data.课程列表;
+                this.totalItems = data.总数;
+            } else {
+                throw new Error(data.detail || '加载失败');
+            }
+        } catch (error) {
+            this.showError('加载课程列表失败: ' + error.message);
+        } finally {
+            this.isLoading = false;
+        }
+    },
+    
+    // 加载排课列表
+    async loadSections() {
+        this.isLoading = true;
+        try {
+            const params = new URLSearchParams();
+            if (this.semester) params.append('学期', this.semester);
+            if (this.year) params.append('学年', this.year);
+            
+            const response = await fetch(`http://127.0.0.1:8000/admin/sections?${params}`);
+            const data = await response.json();
+            
+            if (data.状态 === '成功') {
+                this.sections = data.排课列表;
+            } else {
+                throw new Error(data.detail || '加载失败');
+            }
+        } catch (error) {
+            this.showError('加载排课列表失败: ' + error.message);
+        } finally {
+            this.isLoading = false;
+        }
+    },
+    
+    // 加载教师列表
+    async loadTeachers() {
+        try {
+            const response = await fetch('http://127.0.0.1:8000/admin/teachers?搜索关键词=' + (this.teacherSearchKeyword || ''));
+            const data = await response.json();
+            
+            if (data.状态 === '成功') {
+                this.teachers = data.教师列表;
+            }
+        } catch (error) {
+            console.error('加载教师列表失败:', error);
+        }
+    },
+    
+    // 搜索教师
+    searchTeachers() {
+        this.loadTeachers();
+    },
+    
+    // 加载学生列表
+    async loadStudents() {
+        try {
+            const response = await fetch('http://127.0.0.1:8000/admin/students?搜索关键词=' + (this.studentSearchKeyword || ''));
+            const data = await response.json();
+            
+            if (data.状态 === '成功') {
+                this.students = data.学生列表;
+            }
+        } catch (error) {
+            console.error('加载学生列表失败:', error);
+        }
+    },
+    
+    // 搜索学生
+    searchStudents() {
+        this.loadStudents();
+    },
+    
+    // 添加新教师
+    async addTeacher() {
+        try {
+            const response = await fetch('http://127.0.0.1:8000/admin/add-teacher', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(this.newTeacher)
+            });
+            
+            const data = await response.json();
+            
+            if (response.ok && data.状态 === '成功') {
+                this.showAddTeacherModal = false;
+                this.resetNewTeacher();
+                this.loadTeachers();
+                this.showSuccess('教师添加成功');
+            } else {
+                const errorMessage = data.detail || data.提示 || data.message || '添加失败';
+                this.showError('添加教师失败: ' + errorMessage);
+            }
+        } catch (error) {
+            console.error('添加教师错误:', error);
+            this.showError('添加教师失败: ' + (error.message || '网络错误'));
+        }
+    },
+    
+    // 添加新学生
+    async addStudent() {
+        try {
+            const response = await fetch('http://127.0.0.1:8000/admin/add-student', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(this.newStudent)
+            });
+            
+            const data = await response.json();
+            
+            if (response.ok && data.状态 === '成功') {
+                this.showAddStudentModal = false;
+                this.resetNewStudent();
+                this.loadStudents();
+                this.showSuccess('学生添加成功');
+            } else {
+                // 显示具体的错误信息
+                const errorMessage = data.detail || data.提示 || data.message || '添加失败';
+                this.showError('添加学生失败: ' + errorMessage);
+            }
+        } catch (error) {
+            // 捕获网络错误或其他异常
+            console.error('添加学生错误:', error);
+            this.showError('添加学生失败: ' + (error.message || '网络错误'));
+        }
+    },
+    
+    // 重置新教师表单
+    resetNewTeacher() {
+        this.newTeacher = { 教师ID: '', 姓名: '', 院系: '', 电话: '', 邮箱: '' };
+    },
+    
+    // 重置新学生表单
+    resetNewStudent() {
+        this.newStudent = { 学号: '', 姓名: '', 院系: '', 已修学分: 0, 入学年份: 0, 电话: '', 邮箱: '' };
+    },
+    
+    // 添加新课程
+    async addCourse() {
+        try {
+            const response = await fetch('http://127.0.0.1:8000/admin/courses', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(this.newCourse)
+            });
+            
+            const data = await response.json();
+            
+            if (data.状态 === '成功') {
+                this.showAddCourseModal = false;
+                this.resetNewCourse();
+                this.loadCourses();
+                this.showSuccess('课程添加成功');
+            } else {
+                throw new Error(data.detail || '添加失败');
+            }
+        } catch (error) {
+            this.showError('添加课程失败: ' + error.message);
+        }
+    },
+    
+    // 添加新排课
+    async addSection() {
+        try {
+            const response = await fetch('http://127.0.0.1:8000/admin/sections', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(this.newSection)
+            });
+            
+            const data = await response.json();
+            
+            if (data.状态 === '成功') {
+                this.showAddSectionModal = false;
+                this.resetNewSection();
+                this.showSuccess('排课添加成功');
+                this.loadSections();
+            } else {
+                throw new Error(data.detail || '添加失败');
+            }
+        } catch (error) {
+            this.showError('添加排课失败: ' + error.message);
+        }
+    },
+    
+    
+    // 删除排课
+    async deleteSection(courseId, secId, semester, year) {
+        if (!confirm('确定要删除这个排课记录吗？如果该排课已有学生选课记录，将无法删除。')) {
+            return;
+        }
+        
+        try {
+            const response = await fetch(`http://127.0.0.1:8000/admin/sections/${courseId}/${secId}/${semester}/${year}`, {
+                method: 'DELETE'
+            });
+            
+            const data = await response.json();
+            
+            if (data.状态 === '成功') {
+                this.showSuccess('排课删除成功');
+                this.loadSections();
+            } else {
+                throw new Error(data.detail || '删除失败');
+            }
+        } catch (error) {
+            this.showError('删除排课失败: ' + error.message);
+        }
+    },
+    
+    // 删除教师
+    async deleteTeacher(teacherId) {
+        if (!confirm('确定要删除该教师吗？删除后该教师的所有信息将无法恢复。')) {
+            return;
+        }
+        
+        try {
+            const response = await fetch(`http://127.0.0.1:8000/admin/teacher/${teacherId}`, {
+                method: 'DELETE'
+            });
+            
+            const data = await response.json();
+            
+            if (data.状态 === '成功') {
+                this.showSuccess('教师删除成功');
+                this.loadTeachers();
+            } else {
+                throw new Error(data.detail || '删除失败');
+            }
+        } catch (error) {
+            this.showError('删除教师失败: ' + error.message);
+        }
+    },
+    
+    // 删除学生
+    async deleteStudent(studentId) {
+        if (!confirm('确定要删除该学生吗？删除后该学生的所有信息将无法恢复。')) {
+            return;
+        }
+        
+        try {
+            const response = await fetch(`http://127.0.0.1:8000/admin/student/${studentId}`, {
+                method: 'DELETE'
+            });
+            
+            const data = await response.json();
+            
+            if (data.状态 === '成功') {
+                this.showSuccess('学生删除成功');
+                this.loadStudents();
+            } else {
+                throw new Error(data.detail || '删除失败');
+            }
+        } catch (error) {
+            this.showError('删除学生失败: ' + error.message);
+        }
+    },
+    
+    // 修改课程信息
+    async updateCourse() {
+        try {
+            const response = await fetch(`http://127.0.0.1:8000/admin/courses/${this.editingCourse.course_id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(this.editingCourse)
+            });
+            
+            const data = await response.json();
+            
+            if (data.状态 === '成功') {
+                this.showEditCourseModal = false;
+                this.loadCourses();
+                this.showSuccess('课程信息修改成功');
+            } else {
+                throw new Error(data.detail || '修改失败');
+            }
+        } catch (error) {
+            this.showError('修改课程失败: ' + error.message);
+        }
+    },
+    
+    // 打开修改课程模态框
+    openEditCourseModal(course) {
+        this.editingCourse = { ...course };
+        this.showEditCourseModal = true;
+    },
+    
+    // 删除课程
+    async deleteCourse(courseId) {
+        if (!confirm('确定要删除这门课程吗？如果该课程已有开课记录，将无法删除。')) {
+            return;
+        }
+        
+        try {
+            const response = await fetch(`http://127.0.0.1:8000/admin/courses/${courseId}`, {
+                method: 'DELETE'
+            });
+            
+            const data = await response.json();
+            
+            if (data.状态 === '成功') {
+                this.loadCourses();
+                this.showSuccess('课程删除成功');
+            } else {
+                throw new Error(data.detail || '删除失败');
+            }
+        } catch (error) {
+            this.showError('删除课程失败: ' + error.message);
+        }
+    },
+    
+    // 切换标签页
+    switchTab(tab) {
+        this.currentTab = tab;
+        this.currentPage = 1;
+        
+        if (tab === 'courses') {
+            this.loadCourses();
+        } else if (tab === 'sections') {
+            this.loadSections();
+        } else if (tab === 'students') {
+            this.loadStudents();
+        } else if (tab === 'teachers') {
+            this.loadTeachers();
+        }
+    },
+    
+    // 搜索功能
+    search() {
+        this.currentPage = 1;
+        this.loadCourses();
+    },
+    
+    // 分页功能
+    changePage(page) {
+        this.currentPage = page;
+        this.loadCourses();
+    },
+    
+    // 重置新课程表单
+    resetNewCourse() {
+        this.newCourse = { course_id: '', title: '', dept_name: '', credits: '', target_grade: '', target_semester: '' };
+    },
+    
+    // 重置新排课表单
+    resetNewSection() {
+        this.newSection = { course_id: '', sec_id: '', semester: '', year: '', capacity: '', building: '', room_number: '', schedule: '' };
+    },
+    
+    // 显示成功消息
+    showSuccess(message) {
+        this.showNotification(message, 'success');
+    },
+    
+    // 显示错误消息
+    showError(message) {
+        this.showNotification(message, 'error');
+    },
+    
+    // 显示通知
+    showNotification(message, type = 'info') {
+        const notification = document.createElement('div');
+        notification.className = `fixed top-4 right-4 p-4 rounded-lg shadow-lg z-50 fade-in ${
+            type === 'success' ? 'bg-green-500 text-white' : 
+            type === 'error' ? 'bg-red-500 text-white' : 
+            'bg-blue-500 text-white'
+        }`;
+        notification.textContent = message;
+        
+        document.body.appendChild(notification);
+        
+        setTimeout(() => {
+            notification.remove();
+        }, 3000);
+    },
+    
+    // 退出登录
+    logout() {
+        sessionStorage.removeItem('adminInfo');
+        sessionStorage.removeItem('adminToken');
+        window.location.href = '/admin_login.html';
+    },
+    
+    // 计算总页数
+    get totalPages() {
+        return Math.ceil(this.totalItems / this.pageSize);
+    },
+    
+    // 生成页码数组
+    get pageNumbers() {
+        const pages = [];
+        const startPage = Math.max(1, this.currentPage - 2);
+        const endPage = Math.min(this.totalPages, this.currentPage + 2);
+        
+        for (let i = startPage; i <= endPage; i++) {
+            pages.push(i);
+        }
+        
+        return pages;
+    }
+    }
+}
+</script>
+    <!-- 顶部导航栏 -->
+    <div class="bg-white shadow-sm border-b">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between items-center h-16">
+                <!-- 左侧标题 -->
+                <div class="flex items-center">
+                    <h1 class="text-xl font-bold text-gray-900">教务系统 - 管理员端</h1>
+                </div>
+                
+                <!-- 右侧用户信息 -->
+                <div class="flex items-center space-x-4">
+                    <span class="text-sm text-gray-700" x-text="adminInfo?.username || '管理员'"></span>
+                    <button @click="logout" class="text-sm text-red-600 hover:text-red-800 transition-colors">退出登录</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="flex">
+        <!-- 侧边栏 -->
+        <div class="sidebar-bg w-64 min-h-screen text-white">
+            <nav class="p-4 space-y-2">
+                <button 
+                    @click="switchTab('courses')"
+                    :class="{ 'active': currentTab === 'courses' }"
+                    class="nav-item w-full text-left px-4 py-3 rounded-lg flex items-center space-x-3">
+                    <span>📚</span>
+                    <span>课程管理</span>
+                </button>
+                
+                <button 
+                    @click="switchTab('sections')"
+                    :class="{ 'active': currentTab === 'sections' }"
+                    class="nav-item w-full text-left px-4 py-3 rounded-lg flex items-center space-x-3">
+                    <span>📅</span>
+                    <span>排课管理</span>
+                </button>
+                
+                <button 
+                    @click="switchTab('teachers')"
+                    :class="{ 'active': currentTab === 'teachers' }"
+                    class="nav-item w-full text-left px-4 py-3 rounded-lg flex items-center space-x-3">
+                    <span>👨‍🏫</span>
+                    <span>教师管理</span>
+                </button>
+                
+                <button 
+                    @click="switchTab('students')"
+                    :class="{ 'active': currentTab === 'students' }"
+                    class="nav-item w-full text-left px-4 py-3 rounded-lg flex items-center space-x-3">
+                    <span>🎓</span>
+                    <span>学生管理</span>
+                </button>
+                
+                <button 
+                    @click="switchTab('settings')"
+                    :class="{ 'active': currentTab === 'settings' }"
+                    class="nav-item w-full text-left px-4 py-3 rounded-lg flex items-center space-x-3">
+                    <span>⚙️</span>
+                    <span>系统设置</span>
+                </button>
+            </nav>
+        </div>
+
+        <!-- 主内容区域 -->
+        <div class="flex-1 p-6">
+            <!-- 课程管理 -->
+            <div x-show="currentTab === 'courses'" class="fade-in">
+                <div class="mb-6">
+                    <h2 class="text-2xl font-bold text-gray-900 mb-4">课程管理</h2>
+                    
+                    <!-- 搜索和操作栏 -->
+                    <div class="flex justify-between items-center mb-4">
+                        <div class="flex space-x-4">
+                            <select id="courseDeptSelect" x-model="courseDept" class="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                                <option value="">全部院系</option>
+                            </select>
+                            <input 
+                                type="text" 
+                                x-model="searchKeyword" 
+                                placeholder="搜索课程ID或名称..."
+                                class="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                            <button @click="search" class="bg-primary text-white px-4 py-2 rounded-lg hover:bg-secondary transition-colors">搜索</button>
+                        </div>
+                        <button @click="showAddCourseModal = true" class="bg-accent text-white px-4 py-2 rounded-lg hover:bg-green-600 transition-colors">添加课程</button>
+                    </div>
+                </div>
+
+                <!-- 课程表格 -->
+                <div class="bg-white rounded-lg shadow overflow-hidden">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">课程ID</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">课程名称</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">院系</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">学分</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">目标年级</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">目标学期</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200">
+                            <template x-for="course in courses" :key="course.course_id">
+                                <tr class="hover:bg-gray-50 transition-colors">
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900" x-text="course.course_id"></td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" x-text="course.title"></td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="course.dept_name"></td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="course.credits"></td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="course.target_grade ? '大' + course.target_grade : '不限'"></td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="course.target_semester === 'Spring' ? '春季' : course.target_semester === 'Fall' ? '秋季' : '不限'"></td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                                        <button @click="openEditCourseModal(course)" class="text-primary hover:text-secondary mr-3">修改</button>
+                                        <button @click="deleteCourse(course.course_id)" class="text-danger hover:text-red-700">删除</button>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                    
+                    <!-- 分页 -->
+                    <div class="bg-white px-4 py-3 flex items-center justify-between border-t border-gray-200 sm:px-6">
+                        <div class="flex-1 flex justify-between items-center">
+                            <div>
+                                <p class="text-sm text-gray-700">
+                                    显示第 <span x-text="(currentPage - 1) * pageSize + 1"></span> 到 
+                                    <span x-text="Math.min(currentPage * pageSize, totalItems)"></span> 条，
+                                    共 <span x-text="totalItems"></span> 条记录
+                                </p>
+                            </div>
+                            <div class="flex space-x-2">
+                                <button @click="changePage(currentPage - 1)" :disabled="currentPage === 1" 
+                                    class="relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50">
+                                    上一页
+                                </button>
+                                <template x-for="page in pageNumbers" :key="page">
+                                    <button @click="changePage(page)" 
+                                        :class="{ 'bg-primary text-white': currentPage === page, 'bg-white text-gray-700': currentPage !== page }"
+                                        class="relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md hover:bg-gray-50">
+                                        <span x-text="page"></span>
+                                    </button>
+                                </template>
+                                <button @click="changePage(currentPage + 1)" :disabled="currentPage === totalPages" 
+                                    class="relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50">
+                                    下一页
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 排课管理 -->
+            <div x-show="currentTab === 'sections'" class="fade-in">
+                <div class="mb-6">
+                    <h2 class="text-2xl font-bold text-gray-900 mb-4">排课管理</h2>
+                    
+                    <!-- 筛选和操作栏 -->
+                    <div class="flex justify-between items-center mb-4">
+                        <div class="flex space-x-4">
+                            <select x-model="semester" class="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                                <option value="">所有学期</option>
+                                <option value="Spring">春季学期</option>
+                                <option value="Fall">秋季学期</option>
+                            </select>
+                            <input 
+                                type="number" 
+                                x-model="year" 
+                                placeholder="年份"
+                                class="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent w-32">
+                            <button @click="loadSections" class="bg-primary text-white px-4 py-2 rounded-lg hover:bg-secondary transition-colors">筛选</button>
+                        </div>
+                        <button @click="showAddSectionModal = true" class="bg-accent text-white px-4 py-2 rounded-lg hover:bg-green-600 transition-colors">添加排课</button>
+                    </div>
+                </div>
+
+                <!-- 排课表格 -->
+                <div class="bg-white rounded-lg shadow overflow-hidden">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">课程信息</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">学期/年份</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">上课时间</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">教室</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">容量</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">授课教师</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200">
+                            <template x-for="section in sections" :key="section.course_id + section.sec_id">
+                                <tr class="hover:bg-gray-50 transition-colors">
+                                    <td class="px-6 py-4">
+                                        <div class="text-sm font-medium text-gray-900" x-text="section.course_name"></div>
+                                        <div class="text-sm text-gray-500" x-text="`${section.course_id}-${section.sec_id}`"></div>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="`${section.semester} ${section.year}`"></td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                        <div x-show="section.day_of_week && section.start_period && section.end_period" x-text="`星期${section.day_of_week === 1 ? '一' : section.day_of_week === 2 ? '二' : section.day_of_week === 3 ? '三' : section.day_of_week === 4 ? '四' : section.day_of_week === 5 ? '五' : section.day_of_week === 6 ? '六' : '日'} ${section.start_period}-${section.end_period}节`"></div>
+                                        <div x-show="!section.day_of_week || !section.start_period || !section.end_period" x-text="section.schedule || '待定'"></div>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="`${section.building} ${section.room_number}`"></td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="section.capacity"></td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="section.teacher_name || '未分配'"></td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                                        <button @click="deleteSection(section.course_id, section.sec_id, section.semester, section.year)" class="text-danger hover:text-red-700">删除</button>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 教师管理 -->
+            <div x-show="currentTab === 'teachers'" class="fade-in">
+                <div class="mb-6">
+                    <h2 class="text-2xl font-bold text-gray-900 mb-4">教师管理</h2>
+                    
+                    <!-- 搜索和操作栏 -->
+                    <div class="flex justify-between items-center mb-4">
+                        <div class="flex space-x-4">
+                            <input 
+                                type="text" 
+                                x-model="teacherSearchKeyword" 
+                                placeholder="搜索教师ID或姓名..."
+                                class="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                            <button @click="searchTeachers" class="bg-primary text-white px-4 py-2 rounded-lg hover:bg-secondary transition-colors">搜索</button>
+                        </div>
+                        <button @click="showAddTeacherModal = true" class="bg-accent text-white px-4 py-2 rounded-lg hover:bg-green-600 transition-colors">添加教师</button>
+                    </div>
+                </div>
+                
+                <!-- 教师表格 -->
+                <div class="bg-white rounded-lg shadow overflow-hidden">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">教师ID</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">姓名</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">院系</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">联系方式</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">办公地点</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200">
+                            <template x-for="teacher in teachers" :key="teacher.ID">
+                                <tr class="hover:bg-gray-50 transition-colors">
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900" x-text="teacher.ID"></td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" x-text="teacher.name"></td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="teacher.dept_name"></td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                        <div x-text="teacher.phone"></div>
+                                        <div x-text="teacher.email"></div>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="teacher.building || '未分配'"></td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                                        <button @click="deleteTeacher(teacher.ID)" class="text-danger hover:text-red-700">删除</button>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 学生管理 -->
+            <div x-show="currentTab === 'students'" class="fade-in">
+                <div class="mb-6">
+                    <h2 class="text-2xl font-bold text-gray-900 mb-4">学生管理</h2>
+                    
+                    <!-- 搜索和操作栏 -->
+                    <div class="flex justify-between items-center mb-4">
+                        <div class="flex space-x-4">
+                            <input 
+                                type="text" 
+                                x-model="studentSearchKeyword" 
+                                placeholder="搜索学号或姓名..."
+                                class="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                            <button @click="searchStudents" class="bg-primary text-white px-4 py-2 rounded-lg hover:bg-secondary transition-colors">搜索</button>
+                        </div>
+                        <button @click="showAddStudentModal = true" class="bg-accent text-white px-4 py-2 rounded-lg hover:bg-green-600 transition-colors">添加学生</button>
+                    </div>
+                </div>
+
+                <!-- 学生表格 -->
+                <div class="bg-white rounded-lg shadow overflow-hidden">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">学号</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">姓名</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">院系</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">已修学分</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">入学年份</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">联系方式</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200">
+                            <template x-for="student in students" :key="student.ID">
+                                <tr class="hover:bg-gray-50 transition-colors">
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900" x-text="student.ID"></td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" x-text="student.name"></td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="student.dept_name"></td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="student.tot_cred"></td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="student.entrance_year"></td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                        <div x-text="student.phone"></div>
+                                        <div x-text="student.email"></div>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                                        <button @click="deleteStudent(student.ID)" class="text-danger hover:text-red-700">删除</button>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 系统设置 -->
+            <div x-show="currentTab === 'settings'" class="fade-in">
+                <h2 class="text-2xl font-bold text-gray-900 mb-4">系统设置</h2>
+                
+                <div class="bg-white rounded-lg shadow p-6">
+                    <h3 class="text-lg font-medium text-gray-900 mb-4">修改密码</h3>
+                    
+                    <form @submit.prevent="" class="space-y-4 max-w-md">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">旧密码</label>
+                            <input type="password" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                        </div>
+                        
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">新密码</label>
+                            <input type="password" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                        </div>
+                        
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">确认新密码</label>
+                            <input type="password" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                        </div>
+                        
+                        <button type="submit" class="bg-primary text-white px-4 py-2 rounded-lg hover:bg-secondary transition-colors">修改密码</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 添加课程模态框 -->
+    <div x-show="showAddCourseModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div class="bg-white rounded-lg p-6 w-full max-w-md">
+            <h3 class="text-lg font-medium text-gray-900 mb-4">添加新课程</h3>
+            
+            <form @submit.prevent="addCourse" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">课程ID</label>
+                    <input type="text" x-model="newCourse.course_id" required class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">课程名称</label>
+                    <input type="text" x-model="newCourse.title" required class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">院系</label>
+                    <select x-model="newCourse.dept_name" required class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                        <option value="">请选择院系</option>
+                        <template x-for="dept in departments" :key="dept.dept_name">
+                            <option :value="dept.dept_name" x-text="dept.dept_name"></option>
+                        </template>
+                    </select>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">学分</label>
+                    <input type="number" step="0.1" x-model="newCourse.credits" required class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+                
+                <div class="flex items-center mb-4">
+                    <input type="checkbox" id="isElective" x-model="newCourse.is_elective" class="w-4 h-4 text-primary focus:ring-primary border-gray-300 rounded">
+                    <label for="isElective" class="ml-2 block text-sm text-gray-700">
+                        公选课（所有年级、所有学院学生可选）
+                    </label>
+                </div>
+                
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">目标年级</label>
+                        <select x-model="newCourse.target_grade" :disabled="newCourse.is_elective" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent" :class="{'bg-gray-100': newCourse.is_elective}">
+                            <option value="">不限年级</option>
+                            <option value="1">大一</option>
+                            <option value="2">大二</option>
+                            <option value="3">大三</option>
+                            <option value="4">大四</option>
+                        </select>
+                    </div>
+                    
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">目标学期</label>
+                        <select x-model="newCourse.target_semester" :disabled="newCourse.is_elective" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent" :class="{'bg-gray-100': newCourse.is_elective}">
+                            <option value="">不限学期</option>
+                            <option value="Spring">春季学期</option>
+                            <option value="Fall">秋季学期</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <div class="flex space-x-4">
+                    <button type="submit" class="flex-1 bg-accent text-white px-4 py-2 rounded-lg hover:bg-green-600 transition-colors">添加</button>
+                    <button type="button" @click="showAddCourseModal = false; resetNewCourse()" class="flex-1 bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 transition-colors">取消</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- 修改课程模态框 -->
+    <div x-show="showEditCourseModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div class="bg-white rounded-lg p-6 w-full max-w-md">
+            <h3 class="text-lg font-medium text-gray-900 mb-4">修改课程信息</h3>
+            
+            <form @submit.prevent="updateCourse" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">课程ID</label>
+                    <input type="text" x-model="editingCourse.course_id" readonly class="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-100">
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">课程名称</label>
+                    <input type="text" x-model="editingCourse.title" required class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">院系</label>
+                    <input type="text" x-model="editingCourse.dept_name" required class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">学分</label>
+                    <input type="number" step="0.1" x-model="editingCourse.credits" required class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+                
+                <div class="flex items-center mb-4">
+                    <input type="checkbox" id="editIsElective" x-model="editingCourse.is_elective" class="w-4 h-4 text-primary focus:ring-primary border-gray-300 rounded">
+                    <label for="editIsElective" class="ml-2 block text-sm text-gray-700">
+                        公选课（所有年级、所有学院学生可选）
+                    </label>
+                </div>
+                
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">目标年级</label>
+                        <select x-model="editingCourse.target_grade" :disabled="editingCourse.is_elective" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent" :class="{'bg-gray-100': editingCourse.is_elective}">
+                            <option value="">不限年级</option>
+                            <option value="1">大一</option>
+                            <option value="2">大二</option>
+                            <option value="3">大三</option>
+                            <option value="4">大四</option>
+                        </select>
+                    </div>
+                    
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">目标学期</label>
+                        <select x-model="editingCourse.target_semester" :disabled="editingCourse.is_elective" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent" :class="{'bg-gray-100': editingCourse.is_elective}">
+                            <option value="">不限学期</option>
+                            <option value="Spring">春季学期</option>
+                            <option value="Fall">秋季学期</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <div class="flex space-x-4">
+                    <button type="submit" class="flex-1 bg-accent text-white px-4 py-2 rounded-lg hover:bg-green-600 transition-colors">保存</button>
+                    <button type="button" @click="showEditCourseModal = false" class="flex-1 bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 transition-colors">取消</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- 添加排课模态框 -->
+    <div x-show="showAddSectionModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div class="bg-white rounded-lg p-6 w-full max-w-md">
+            <h3 class="text-lg font-medium text-gray-900 mb-4">添加新排课</h3>
+            
+            <form @submit.prevent="addSection" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">课程</label>
+                    <select x-model="newSection.course_id" required class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                        <option value="">选择课程</option>
+                        <template x-for="course in courses" :key="course.course_id">
+                            <option :value="course.course_id" x-text="course.course_id + ' - ' + course.title"></option>
+                        </template>
+                    </select>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">教师</label>
+                    <select x-model="newSection.teacher_id" required class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                        <option value="">选择教师</option>
+                        <template x-for="teacher in teachers" :key="teacher.ID">
+                            <option :value="teacher.ID" x-text="teacher.ID + ' - ' + teacher.name"></option>
+                        </template>
+                    </select>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">班级编号</label>
+                    <input type="text" x-model="newSection.sec_id" required class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+                
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">学期</label>
+                        <select x-model="newSection.semester" required class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                            <option value="">选择学期</option>
+                            <option value="Spring">春季</option>
+                            <option value="Fall">秋季</option>
+                        </select>
+                    </div>
+                    
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">年份</label>
+                        <input type="number" x-model="newSection.year" required class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                    </div>
+                </div>
+                
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">教学楼</label>
+                        <select x-model="newSection.building" required class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                            <option value="">选择教学楼</option>
+                            <option value="理学楼">理学楼</option>
+                            <option value="文科楼">文科楼</option>
+                            <option value="工科楼">工科楼</option>
+                            <option value="综合楼">综合楼</option>
+                        </select>
+                    </div>
+                    
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">教室号</label>
+                        <select x-model="newSection.room_number" required class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                            <option value="">选择教室号</option>
+                            <option value="101">101</option>
+                            <option value="102">102</option>
+                            <option value="201">201</option>
+                            <option value="202">202</option>
+                            <option value="301">301</option>
+                            <option value="302">302</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <div class="grid grid-cols-3 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">星期</label>
+                        <select x-model="newSection.day_of_week" required class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                            <option value="">选择星期</option>
+                            <option value="1">星期一</option>
+                            <option value="2">星期二</option>
+                            <option value="3">星期三</option>
+                            <option value="4">星期四</option>
+                            <option value="5">星期五</option>
+                            <option value="6">星期六</option>
+                            <option value="7">星期日</option>
+                        </select>
+                    </div>
+                    
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">开始节次</label>
+                        <select x-model="newSection.start_period" required class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                            <option value="">开始节</option>
+                            <option value="1">第1节</option>
+                            <option value="2">第2节</option>
+                            <option value="3">第3节</option>
+                            <option value="4">第4节</option>
+                            <option value="5">第5节</option>
+                            <option value="6">第6节</option>
+                            <option value="7">第7节</option>
+                            <option value="8">第8节</option>
+                        </select>
+                    </div>
+                    
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">结束节次</label>
+                        <select x-model="newSection.end_period" required class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                            <option value="">结束节</option>
+                            <option value="1">第1节</option>
+                            <option value="2">第2节</option>
+                            <option value="3">第3节</option>
+                            <option value="4">第4节</option>
+                            <option value="5">第5节</option>
+                            <option value="6">第6节</option>
+                            <option value="7">第7节</option>
+                            <option value="8">第8节</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">容量</label>
+                    <input type="number" x-model="newSection.capacity" required class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+                
+                <div class="flex space-x-4">
+                    <button type="submit" class="flex-1 bg-accent text-white px-4 py-2 rounded-lg hover:bg-green-600 transition-colors">添加</button>
+                    <button type="button" @click="showAddSectionModal = false; resetNewSection()" class="flex-1 bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 transition-colors">取消</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- 添加教师模态框 -->
+    <div x-show="showAddTeacherModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div class="bg-white rounded-lg p-6 w-full max-w-md">
+            <h3 class="text-lg font-medium text-gray-900 mb-4">添加新教师</h3>
+            
+            <form @submit.prevent="addTeacher" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">教师ID</label>
+                    <input type="text" x-model="newTeacher.教师ID" required class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">姓名</label>
+                    <input type="text" x-model="newTeacher.姓名" required class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">院系</label>
+                    <select x-model="newTeacher.院系" required class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                        <option value="">请选择院系</option>
+                        <template x-for="dept in departments" :key="dept.dept_name">
+                            <option :value="dept.dept_name" x-text="dept.dept_name"></option>
+                        </template>
+                    </select>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">电话</label>
+                    <input type="text" x-model="newTeacher.电话" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">邮箱</label>
+                    <input type="email" x-model="newTeacher.邮箱" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+                
+                <div class="bg-blue-50 p-3 rounded-lg text-sm text-blue-800">
+                    <p class="font-medium">系统将自动生成：</p>
+                    <p>• 账号：tea_ + 姓氏拼音（如：tea_ma）</p>
+                    <p>• 密码：123456（初始密码）</p>
+                </div>
+                
+                <div class="flex space-x-4">
+                    <button type="submit" class="flex-1 bg-accent text-white px-4 py-2 rounded-lg hover:bg-green-600 transition-colors">添加</button>
+                    <button type="button" @click="showAddTeacherModal = false; resetNewTeacher()" class="flex-1 bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 transition-colors">取消</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- 添加学生模态框 -->
+    <div x-show="showAddStudentModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div class="bg-white rounded-lg p-6 w-full max-w-md">
+            <h3 class="text-lg font-medium text-gray-900 mb-4">添加新学生</h3>
+            
+            <form @submit.prevent="addStudent" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">学号</label>
+                    <input type="text" x-model="newStudent.学号" required class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">姓名</label>
+                    <input type="text" x-model="newStudent.姓名" required class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">院系</label>
+                    <select x-model="newStudent.院系" required class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                        <option value="">请选择院系</option>
+                        <template x-for="dept in departments" :key="dept.dept_name">
+                            <option :value="dept.dept_name" x-text="dept.dept_name"></option>
+                        </template>
+                    </select>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">已修学分</label>
+                    <input type="number" step="0.1" x-model="newStudent.已修学分" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">入学年份</label>
+                    <input type="number" x-model="newStudent.入学年份" required class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">电话</label>
+                    <input type="text" x-model="newStudent.电话" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">邮箱</label>
+                    <input type="email" x-model="newStudent.邮箱" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                </div>
+                
+                <div class="bg-blue-50 p-3 rounded-lg text-sm text-blue-800">
+                    <p class="font-medium">系统将自动生成：</p>
+                    <p>• 账号：stu_ + 姓氏拼音（如：stu_ma）</p>
+                    <p>• 密码：123456（初始密码）</p>
+                </div>
+                
+                <div class="flex space-x-4">
+                    <button type="submit" class="flex-1 bg-accent text-white px-4 py-2 rounded-lg hover:bg-green-600 transition-colors">添加</button>
+                    <button type="button" @click="showAddStudentModal = false; resetNewStudent()" class="flex-1 bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 transition-colors">取消</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- 加载状态 -->
+    <div x-show="isLoading" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div class="bg-white rounded-lg p-6">
+            <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto"></div>
+            <p class="mt-2 text-sm text-gray-600">加载中...</p>
+        </div>
+    </div>
+</body>
+</html>

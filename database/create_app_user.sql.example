@@ -1,0 +1,14 @@
+-- 复制为 create_app_user.sql，把下方密码替换为你自己的强密码后执行。
+-- create_app_user.sql 已被 Git 忽略，不会被上传。
+
+CREATE USER IF NOT EXISTS 'school_app'@'localhost'
+IDENTIFIED BY '请替换为你自己的数据库密码';
+
+ALTER USER 'school_app'@'localhost'
+IDENTIFIED BY '请替换为你自己的数据库密码';
+
+GRANT SELECT, INSERT, UPDATE, DELETE
+ON school_db.*
+TO 'school_app'@'localhost';
+
+FLUSH PRIVILEGES;

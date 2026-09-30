@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>教务系统登录</title>
+    <!-- 使用更稳定的Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
+    <!-- Font Awesome -->
+    <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+    
+    <style>
+        /* 基础样式确保页面正常显示 */
+        body { 
+            margin: 0;
+            font-family: system-ui, -apple-system, sans-serif;
+        }
+        
+        /* 确保基础颜色可用 */
+        .bg-blue-600 { background-color: #2563eb; }
+        .bg-blue-700 { background-color: #1d4ed8; }
+        .bg-green-600 { background-color: #16a34a; }
+        .bg-green-700 { background-color: #15803d; }
+        .text-white { color: white; }
+        .text-gray-600 { color: #4b5563; }
+        .text-gray-800 { color: #1f2937; }
+        .border-gray-300 { border-color: #d1d5db; }
+        .focus\:ring-blue-500:focus { --tw-ring-color: #3b82f6; }
+        .focus\:border-blue-500:focus { border-color: #3b82f6; }
+    </style>
+    
+    <style type="text/tailwindcss">
+        @layer utilities {
+            .content-auto {
+                content-visibility: auto;
+            }
+            .bg-gradient-blue {
+                background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+            }
+            .text-shadow {
+                text-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            }
+            .transition-all-300 {
+                transition: all 0.3s ease;
+            }
+        }
+    </style>
+</head>
+<body class="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+    <div class="w-full max-w-md">
+        <div class="bg-white rounded-xl shadow-xl overflow-hidden">
+            <!-- 顶部渐变背景 -->
+            <div class="bg-gradient-blue h-24 flex items-center justify-center">
+                <div class="text-center">
+                    <i class="fa fa-graduation-cap text-white text-4xl mb-2"></i>
+                    <h1 class="text-white text-2xl font-bold text-shadow">教务系统</h1>
+                </div>
+            </div>
+            
+            <!-- 登录表单 -->
+            <div class="p-8">
+                <h2 class="text-2xl font-semibold text-gray-800 mb-6 text-center">用户登录</h2>
+                
+                <!-- 登录表单 -->
+                <form id="loginForm" class="space-y-6">
+                    <!-- 用户名输入 -->
+                    <div>
+                        <label for="username" class="block text-sm font-medium text-gray-700 mb-1">用户名</label>
+                        <div class="relative">
+                            <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                <i class="fa fa-user text-gray-400"></i>
+                            </div>
+                            <input 
+                                type="text" 
+                                id="username" 
+                                name="username" 
+                                class="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary transition-all-300"
+                                placeholder="请输入用户名，例如 stu_xiaoming"
+                                required
+                            >
+                        </div>
+                    </div>
+                    
+                    <!-- 密码输入 -->
+                    <div>
+                        <label for="password" class="block text-sm font-medium text-gray-700 mb-1">密码</label>
+                        <div class="relative">
+                            <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                <i class="fa fa-lock text-gray-400"></i>
+                            </div>
+                            <input 
+                                type="password" 
+                                id="password" 
+                                name="password" 
+                                class="block w-full pl-10 pr-10 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary transition-all-300"
+                                placeholder="请输入密码"
+                                required
+                            >
+                            <div class="absolute inset-y-0 right-0 pr-3 flex items-center">
+                                <button 
+                                    type="button" 
+                                    id="togglePassword"
+                                    class="text-gray-400 hover:text-gray-600 transition-all-300"
+                                >
+                                    <i class="fa fa-eye-slash"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 记住我选项 -->
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center">
+                            <input 
+                                id="remember-me" 
+                                name="remember-me" 
+                                type="checkbox" 
+                                class="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded"
+                            >
+                            <label for="remember-me" class="ml-2 block text-sm text-gray-700">
+                                记住我
+                            </label>
+                        </div>
+                        
+                        <div class="text-sm">
+                            <a href="#" class="font-medium text-primary hover:text-blue-700 transition-all-300">
+                                忘记密码？
+                            </a>
+                        </div>
+                    </div>
+                    
+                    <!-- 登录按钮 -->
+                    <div>
+                        <button 
+                            type="submit" 
+                            id="loginButton"
+                            class="w-full flex justify-center py-2 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-all-300"
+                        >
+                            <span id="loginButtonText">登录</span>
+                            <span id="loginButtonLoading" class="hidden ml-2">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </span>
+                        </button>
+                    </div>
+                </form>
+                
+                <!-- 错误提示 -->
+                <div id="errorMessage" class="mt-4 hidden p-3 bg-red-50 border border-red-200 rounded-lg">
+                    <div class="flex items-center">
+                        <i class="fa fa-exclamation-circle text-red-500 mr-2"></i>
+                        <span id="errorText"></span>
+                    </div>
+                </div>
+                
+                <!-- 成功提示 -->
+                <div id="successMessage" class="mt-4 hidden p-3 bg-green-50 border border-green-200 rounded-lg">
+                    <div class="flex items-center">
+                        <i class="fa fa-check-circle text-green-500 mr-2"></i>
+                        <span id="successText"></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 底部信息 -->
+        <div class="mt-6 text-center text-sm text-gray-500">
+            <p>© 2026 教务系统 - 版权所有</p>
+        </div>
+    </div>
+    
+    <!-- JavaScript -->
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // 获取DOM元素
+            const loginForm = document.getElementById('loginForm');
+            const usernameInput = document.getElementById('username');
+            const passwordInput = document.getElementById('password');
+            const togglePassword = document.getElementById('togglePassword');
+            const loginButton = document.getElementById('loginButton');
+            const loginButtonText = document.getElementById('loginButtonText');
+            const loginButtonLoading = document.getElementById('loginButtonLoading');
+            const errorMessage = document.getElementById('errorMessage');
+            const errorText = document.getElementById('errorText');
+            const successMessage = document.getElementById('successMessage');
+            const successText = document.getElementById('successText');
+            
+            // 切换密码可见性
+            togglePassword.addEventListener('click', function() {
+                const type = passwordInput.getAttribute('type') === 'password' ? 'text' : 'password';
+                passwordInput.setAttribute('type', type);
+                
+                // 切换图标
+                const icon = togglePassword.querySelector('i');
+                if (type === 'password') {
+                    icon.classList.remove('fa-eye');
+                    icon.classList.add('fa-eye-slash');
+                } else {
+                    icon.classList.remove('fa-eye-slash');
+                    icon.classList.add('fa-eye');
+                }
+            });
+            
+            // 表单提交处理
+            loginForm.addEventListener('submit', function(e) {
+                e.preventDefault();
+                
+                // 隐藏所有提示
+                errorMessage.classList.add('hidden');
+                successMessage.classList.add('hidden');
+                
+                // 显示加载状态
+                loginButton.disabled = true;
+                loginButtonText.textContent = '登录中...';
+                loginButtonLoading.classList.remove('hidden');
+                
+                // 获取表单数据
+                const username = usernameInput.value.trim();
+                const password = passwordInput.value.trim();
+                
+                // 简单验证
+                if (!username || !password) {
+                    showError('请输入用户名和密码');
+                    resetButton();
+                    return;
+                }
+                
+                // 发送登录请求
+                fetch('/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        用户名: username,
+                        密码: password
+                    })
+                })
+                .then(response => {
+                    if (!response.ok) {
+                        return response.json().then(error => {
+                            throw new Error(error.detail || '登录失败');
+                        });
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    // 登录成功
+                    showSuccess(data.提示);
+                    
+                    // 保存用户信息到本地存储
+                    localStorage.setItem('currentUser', JSON.stringify(data.用户信息));
+                    
+                    // 跳转到学生端主界面
+                    setTimeout(() => {
+                        window.location.href = '/student_portal.html';
+                    }, 1000);
+                })
+                .catch(error => {
+                    // 登录失败
+                    showError(error.message);
+                })
+                .finally(() => {
+                    // 重置按钮状态
+                    resetButton();
+                });
+            });
+            
+            // 显示错误信息
+            function showError(message) {
+                errorText.textContent = message;
+                errorMessage.classList.remove('hidden');
+                successMessage.classList.add('hidden');
+            }
+            
+            // 显示成功信息
+            function showSuccess(message) {
+                successText.textContent = message;
+                successMessage.classList.remove('hidden');
+                errorMessage.classList.add('hidden');
+            }
+            
+            // 重置按钮状态
+            function resetButton() {
+                loginButton.disabled = false;
+                loginButtonText.textContent = '登录';
+                loginButtonLoading.classList.add('hidden');
+            }
+        });
+    </script>
+</body>
+</html>

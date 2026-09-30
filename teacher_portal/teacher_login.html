@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>教务系统 - 教师端登录</title>
+    <!-- 使用更稳定的Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <style>
+        /* 基础样式确保页面正常显示 */
+        body { 
+            margin: 0;
+            font-family: system-ui, -apple-system, sans-serif;
+        }
+        
+        /* 确保基础颜色可用 */
+        .bg-blue-600 { background-color: #2563eb; }
+        .bg-blue-700 { background-color: #1d4ed8; }
+        .bg-gray-100 { background-color: #f3f4f6; }
+        .text-white { color: white; }
+        .text-gray-600 { color: #4b5563; }
+        .text-gray-800 { color: #1f2937; }
+        .border-gray-300 { border-color: #d1d5db; }
+        .focus\:ring-blue-500:focus { --tw-ring-color: #3b82f6; }
+        .focus\:border-blue-500:focus { border-color: #3b82f6; }
+    </style>
+    <style>
+        .transition-all-300 {
+            transition: all 0.3s ease;
+        }
+        .sidebar-active {
+            background-color: #3b82f6;
+            color: white;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex items-center justify-center">
+    <!-- 登录容器 -->
+    <div class="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md">
+        <!-- 系统标题 -->
+        <div class="text-center mb-8">
+            <div class="w-16 h-16 bg-blue-600 rounded-full flex items-center justify-center mx-auto mb-4">
+                <i class="fas fa-chalkboard-teacher text-white text-2xl"></i>
+            </div>
+            <h1 class="text-2xl font-bold text-gray-800">教务系统</h1>
+            <p class="text-gray-600">教师端登录</p>
+        </div>
+
+        <!-- 登录表单 -->
+        <form id="loginForm" class="space-y-6">
+            <div>
+                <label for="username" class="block text-sm font-medium text-gray-700 mb-2">
+                    <i class="fas fa-user mr-2"></i>用户名
+                </label>
+                <input 
+                    type="text" 
+                    id="username" 
+                    name="username" 
+                    required 
+                    class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all-300"
+                    placeholder="请输入您的用户名"
+                >
+            </div>
+
+            <div>
+                <label for="password" class="block text-sm font-medium text-gray-700 mb-2">
+                    <i class="fas fa-lock mr-2"></i>密码
+                </label>
+                <input 
+                    type="password" 
+                    id="password" 
+                    name="password" 
+                    required 
+                    class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all-300"
+                    placeholder="请输入您的密码"
+                >
+            </div>
+
+            <button 
+                type="submit" 
+                class="w-full bg-blue-600 text-white py-3 px-4 rounded-lg font-semibold hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-all-300"
+                id="loginBtn"
+            >
+                <i class="fas fa-sign-in-alt mr-2"></i>登录
+            </button>
+        </form>
+
+        <!-- 错误提示 -->
+        <div id="errorMessage" class="mt-4 p-3 bg-red-100 text-red-700 rounded-lg hidden">
+            <i class="fas fa-exclamation-triangle mr-2"></i>
+            <span id="errorText"></span>
+        </div>
+    </div>
+
+    <!-- 模态框 -->
+    <div id="modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50">
+        <div class="bg-white rounded-lg p-6 max-w-sm mx-4">
+            <h3 id="modalTitle" class="text-lg font-semibold mb-2"></h3>
+            <p id="modalMessage" class="text-gray-600 mb-4"></p>
+            <button id="modalClose" class="w-full bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 transition-all-300">
+                确定
+            </button>
+        </div>
+    </div>
+
+    <script>
+        // 显示模态框
+        function showModal(title, message) {
+            document.getElementById('modalTitle').textContent = title;
+            document.getElementById('modalMessage').textContent = message;
+            document.getElementById('modal').classList.remove('hidden');
+        }
+
+        // 隐藏模态框
+        document.getElementById('modalClose').addEventListener('click', function() {
+            document.getElementById('modal').classList.add('hidden');
+        });
+
+        // 显示错误信息
+        function showError(message) {
+            const errorDiv = document.getElementById('errorMessage');
+            const errorText = document.getElementById('errorText');
+            errorText.textContent = message;
+            errorDiv.classList.remove('hidden');
+            
+            // 3秒后自动隐藏错误信息
+            setTimeout(() => {
+                errorDiv.classList.add('hidden');
+            }, 3000);
+        }
+
+        // 登录表单提交
+        document.getElementById('loginForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+            const loginBtn = document.getElementById('loginBtn');
+            
+            if (!username || !password) {
+                showError('请输入用户名和密码');
+                return;
+            }
+            
+            // 显示加载状态
+            loginBtn.disabled = true;
+            loginBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>登录中...';
+            
+            try {
+                const response = await fetch('http://localhost:8000/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        用户名: username,
+                        密码: password
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok && data.状态 === '成功') {
+                    // 检查用户角色是否为教师
+                    if (data.用户信息.role === 'teacher') {
+                        // 存储用户信息
+                        localStorage.setItem('teacherUser', JSON.stringify(data.用户信息));
+                        
+                        // 跳转到教师端主界面
+                        window.location.href = '/teacher_portal.html';
+                    } else {
+                        showError('此账号不是教师账号，请使用教师账号登录');
+                    }
+                } else {
+                    showError(data.detail || '登录失败，请检查用户名和密码');
+                }
+                
+            } catch (error) {
+                console.error('登录错误:', error);
+                showError('网络连接失败，请检查服务器是否运行');
+            } finally {
+                // 恢复按钮状态
+                loginBtn.disabled = false;
+                loginBtn.innerHTML = '<i class="fas fa-sign-in-alt mr-2"></i>登录';
+            }
+        });
+
+        // 检查是否已经登录
+        document.addEventListener('DOMContentLoaded', function() {
+            const teacherUser = localStorage.getItem('teacherUser');
+            if (teacherUser) {
+                // 如果已经登录，直接跳转到主界面
+                window.location.href = '/teacher_portal.html';
+            }
+        });
+
+        // 回车键登录
+        document.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                document.getElementById('loginForm').dispatchEvent(new Event('submit'));
+            }
+        });
+    </script>
+</body>
+</html>

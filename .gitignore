@@ -1,0 +1,20 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+*.log
+.idea/
+.vscode/settings.json
+
+# 旧项目的一次性查库、改表和调试脚本仅作本地参考，不进入新版本。
+scripts/*.py
+scripts/**/*.py
+!scripts/__init__.py
+!scripts/config.py
+!scripts/main.py
+
+# 本文件会包含本机数据库账号密码，只保留 example 模板。
+database/create_app_user.sql

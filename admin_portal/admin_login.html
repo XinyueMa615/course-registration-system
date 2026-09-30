@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>教务系统 - 管理员登录</title>
+    <!-- 使用更稳定的Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
+    <style>
+        /* 基础样式确保页面正常显示 */
+        body { 
+            margin: 0;
+            font-family: system-ui, -apple-system, sans-serif;
+        }
+        
+        /* 确保基础颜色可用 */
+        .bg-blue-600 { background-color: #2563eb; }
+        .bg-blue-700 { background-color: #1d4ed8; }
+        .text-white { color: white; }
+        .text-gray-600 { color: #4b5563; }
+        .text-gray-800 { color: #1f2937; }
+        .border-gray-300 { border-color: #d1d5db; }
+        .focus\:ring-blue-500:focus { --tw-ring-color: #3b82f6; }
+        .focus\:border-blue-500:focus { border-color: #3b82f6; }
+    </style>
+    <style>
+        .gradient-bg {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .login-card {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+        }
+    </style>
+</head>
+<body class="gradient-bg min-h-screen flex items-center justify-center p-4">
+    <div class="login-card rounded-2xl shadow-2xl p-8 w-full max-w-md">
+        <!-- 标题区域 -->
+        <div class="text-center mb-8">
+            <h1 class="text-3xl font-bold text-gray-800 mb-2">教务系统</h1>
+            <p class="text-gray-600">管理员登录</p>
+        </div>
+
+        <!-- 登录表单 -->
+        <form id="loginForm" class="space-y-6">
+            <div>
+                <label for="username" class="block text-sm font-medium text-gray-700 mb-2">用户名</label>
+                <input 
+                    type="text" 
+                    id="username" 
+                    name="username" 
+                    required
+                    class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent transition-all duration-200"
+                    placeholder="请输入管理员用户名">
+            </div>
+
+            <div>
+                <label for="password" class="block text-sm font-medium text-gray-700 mb-2">密码</label>
+                <input 
+                    type="password" 
+                    id="password" 
+                    name="password" 
+                    required
+                    class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent transition-all duration-200"
+                    placeholder="请输入密码">
+            </div>
+
+            <!-- 错误提示 -->
+            <div id="errorMessage" class="hidden bg-red-50 border border-red-200 rounded-lg p-3">
+                <p class="text-red-600 text-sm" id="errorText"></p>
+            </div>
+
+            <!-- 登录按钮 -->
+            <button 
+                type="submit"
+                id="loginBtn"
+                class="w-full bg-primary hover:bg-secondary text-white font-semibold py-3 px-4 rounded-lg transition-all duration-200 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary">
+                <span id="loginText">登录</span>
+                <span id="loadingSpinner" class="hidden animate-spin">⏳</span>
+            </button>
+        </form>
+
+        <!-- 系统导航 -->
+        <div class="mt-6 text-center text-sm text-gray-600">
+            <p>其他系统入口：</p>
+            <div class="flex justify-center space-x-4 mt-2">
+                <a href="/login.html" class="text-primary hover:text-secondary transition-colors">学生端</a>
+                <a href="/teacher_login.html" class="text-primary hover:text-secondary transition-colors">教师端</a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 登录表单提交
+        document.getElementById('loginForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const loginBtn = document.getElementById('loginBtn');
+            const loginText = document.getElementById('loginText');
+            const loadingSpinner = document.getElementById('loadingSpinner');
+            const errorMessage = document.getElementById('errorMessage');
+            const errorText = document.getElementById('errorText');
+            
+            // 显示加载状态
+            loginBtn.disabled = true;
+            loginText.classList.add('hidden');
+            loadingSpinner.classList.remove('hidden');
+            errorMessage.classList.add('hidden');
+            
+            try {
+                // 发送登录请求到后端API
+                const response = await fetch('http://127.0.0.1:8000/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        用户名: username,
+                        密码: password
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok && data.状态 === '成功' && data.用户信息.role === 'admin') {
+                    // 登录成功，保存用户信息到sessionStorage
+                    sessionStorage.setItem('adminInfo', JSON.stringify(data.用户信息));
+                    sessionStorage.setItem('adminToken', data.token || 'admin_token');
+                    
+                    // 跳转到管理员主界面
+                    window.location.href = '/admin_portal.html';
+                } else {
+                    // 登录失败
+                    throw new Error(data.detail || '登录失败，请检查用户名和密码');
+                }
+                
+            } catch (error) {
+                // 显示错误信息
+                errorText.textContent = error.message || '网络连接失败，请检查服务器是否运行';
+                errorMessage.classList.remove('hidden');
+                
+                // 恢复按钮状态
+                loginBtn.disabled = false;
+                loginText.classList.remove('hidden');
+                loadingSpinner.classList.add('hidden');
+            }
+        });
+
+        // 输入框实时验证
+        document.getElementById('username').addEventListener('input', function() {
+            document.getElementById('errorMessage').classList.add('hidden');
+        });
+        
+        document.getElementById('password').addEventListener('input', function() {
+            document.getElementById('errorMessage').classList.add('hidden');
+        });
+
+        // 页面加载时检查是否已登录
+        window.addEventListener('load', function() {
+            const adminInfo = sessionStorage.getItem('adminInfo');
+            if (adminInfo) {
+                const userInfo = JSON.parse(adminInfo);
+                if (userInfo.role === 'admin') {
+                    // 已登录，直接跳转
+                    window.location.href = '/admin_portal.html';
+                }
+            }
+        });
+
+        // 回车键提交表单
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                document.getElementById('loginForm').dispatchEvent(new Event('submit'));
+            }
+        });
+    </script>
+</body>
+</html>
