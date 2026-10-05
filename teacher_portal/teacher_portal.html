@@ -74,6 +74,9 @@
                     <button data-tab="courses" class="w-full text-left px-4 py-3 rounded-lg hover:bg-gray-100 transition-all-300">
                         <i class="fas fa-book mr-3"></i>教学任务
                     </button>
+                    <button data-tab="applications" class="w-full text-left px-4 py-3 rounded-lg hover:bg-gray-100 transition-all-300">
+                        <i class="fas fa-hand-paper mr-3"></i>任课选择
+                    </button>
                     <button data-tab="grades" class="w-full text-left px-4 py-3 rounded-lg hover:bg-gray-100 transition-all-300">
                         <i class="fas fa-graduation-cap mr-3"></i>成绩录入
                     </button>
@@ -161,6 +164,34 @@
                         <!-- 课程列表 -->
                         <div id="coursesList" class="space-y-4">
                             <!-- 课程卡片将在这里动态生成 -->
+                        </div>
+                    </div>
+
+                    <!-- 教师资格与任课选择 -->
+                    <div id="applications" class="tab-content">
+                        <h2 class="text-2xl font-bold text-gray-800 mb-6">教师资格与任课选择</h2>
+                        <div class="bg-white rounded-lg shadow p-6 mb-6">
+                            <h3 class="text-lg font-semibold mb-3">我的任课资格</h3>
+                            <div id="qualificationList" class="flex flex-wrap gap-2 text-sm text-gray-700">加载中...</div>
+                        </div>
+                        <div class="bg-white rounded-lg shadow p-6 mb-6">
+                            <div class="flex flex-wrap gap-4 items-end">
+                                <div><label class="block text-sm font-medium text-gray-700 mb-1">学期</label>
+                                    <select id="applicationSemester" class="border border-gray-300 rounded-lg px-3 py-2">
+                                        <option value="">全部学期</option><option value="Fall">秋季学期</option>
+                                        <option value="Spring">春季学期</option><option value="Summer">夏季学期</option><option value="Winter">冬季学期</option>
+                                    </select>
+                                </div>
+                                <div><label class="block text-sm font-medium text-gray-700 mb-1">学年</label>
+                                    <input id="applicationYear" type="number" class="border border-gray-300 rounded-lg px-3 py-2 w-32" placeholder="年份">
+                                </div>
+                                <button id="searchApplications" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">查询可申请教学班</button>
+                            </div>
+                        </div>
+                        <div id="availableSections" class="space-y-4 mb-6"></div>
+                        <div class="bg-white rounded-lg shadow p-6">
+                            <h3 class="text-lg font-semibold mb-4">我的申请记录</h3>
+                            <div id="applicationHistory" class="text-sm text-gray-600">加载中...</div>
                         </div>
                     </div>
 
@@ -445,6 +476,10 @@
                 loadTeachingCourses();
             };
 
+            document.getElementById('searchApplications').onclick = function() {
+                loadTeacherApplications();
+            };
+
             // 加载班级 - 使用更可靠的事件绑定
             document.getElementById('loadClass').onclick = function() {
                 loadClassStudents();
@@ -494,9 +529,90 @@
                 case 'courses':
                     loadTeachingCourses();
                     break;
+                case 'applications':
+                    loadTeacherApplications();
+                    break;
                 case 'grades':
                     loadGradeCourses();
                     break;
+            }
+        }
+
+        // 加载教师资格、可申请教学班和申请记录
+        async function loadTeacherApplications() {
+            try {
+                const qualificationResponse = await fetch(`http://localhost:8000/teacher/qualifications/${currentUser.username}`);
+                const qualificationData = await qualificationResponse.json();
+                const qualificationList = document.getElementById('qualificationList');
+                qualificationList.innerHTML = qualificationData.资格课程 && qualificationData.资格课程.length
+                    ? qualificationData.资格课程.map(item => `<span class="bg-blue-100 text-blue-800 px-3 py-1 rounded-full">${item.course_id} ${item.course_name}</span>`).join('')
+                    : '<span class="text-gray-500">暂无已审核资格</span>';
+
+                const semester = document.getElementById('applicationSemester').value;
+                const year = document.getElementById('applicationYear').value;
+                const params = new URLSearchParams();
+                if (semester) params.set('学期', semester);
+                if (year) params.set('学年', year);
+                const sectionResponse = await fetch(`http://localhost:8000/teacher/available-sections/${currentUser.username}?${params}`);
+                const sectionData = await sectionResponse.json();
+                renderAvailableSections(sectionData.可申请教学班 || []);
+
+                const historyResponse = await fetch(`http://localhost:8000/teacher/applications/${currentUser.username}`);
+                const historyData = await historyResponse.json();
+                renderApplicationHistory(historyData.申请列表 || []);
+            } catch (error) {
+                console.error('加载任课申请失败:', error);
+                showModal('错误', '加载教师资格或任课申请失败: ' + error.message);
+            }
+        }
+
+        function renderAvailableSections(sections) {
+            const container = document.getElementById('availableSections');
+            if (!sections.length) {
+                container.innerHTML = '<div class="bg-white rounded-lg shadow p-6 text-gray-500">暂无符合资格且尚未分配教师的教学班</div>';
+                return;
+            }
+            container.innerHTML = sections.map(section => `
+                <div class="bg-white rounded-lg shadow p-5 flex flex-wrap items-center justify-between gap-4">
+                    <div><h3 class="font-semibold text-gray-800">${section.course_id} ${section.course_name}</h3>
+                    <p class="text-sm text-gray-500">${section.sec_id}班 · ${section.semester} ${section.year} · 容量 ${section.capacity}</p></div>
+                    <button class="apply-section bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700"
+                        data-course-id="${section.course_id}" data-sec-id="${section.sec_id}"
+                        data-semester="${section.semester}" data-year="${section.year}">提交申请</button>
+                </div>`).join('');
+            container.querySelectorAll('.apply-section').forEach(button => {
+                button.addEventListener('click', () => submitTeachingApplication(button));
+            });
+        }
+
+        function renderApplicationHistory(applications) {
+            const container = document.getElementById('applicationHistory');
+            if (!applications.length) { container.textContent = '暂无申请记录'; return; }
+            const statusText = {PENDING: '待审核', APPROVED: '已通过', REJECTED: '已驳回', WITHDRAWN: '已撤回'};
+            container.innerHTML = `<div class="overflow-x-auto"><table class="min-w-full"><thead><tr class="text-left border-b">
+                <th class="py-2 pr-4">课程</th><th class="py-2 pr-4">教学班</th><th class="py-2 pr-4">学期</th><th class="py-2">状态</th>
+                </tr></thead><tbody>${applications.map(item => `<tr class="border-b"><td class="py-2 pr-4">${item.course_id} ${item.course_name}</td>
+                <td class="py-2 pr-4">${item.sec_id}</td><td class="py-2 pr-4">${item.semester} ${item.year}</td>
+                <td class="py-2">${statusText[item.status] || item.status}</td></tr>`).join('')}</tbody></table></div>`;
+        }
+
+        async function submitTeachingApplication(button) {
+            const payload = {
+                课程编号: button.dataset.courseId, 班级编号: button.dataset.secId,
+                学期: button.dataset.semester, 学年: Number(button.dataset.year)
+            };
+            button.disabled = true;
+            try {
+                const response = await fetch(`http://localhost:8000/teacher/applications/${currentUser.username}`, {
+                    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.detail || '提交失败');
+                showModal('成功', data.提示);
+                await loadTeacherApplications();
+            } catch (error) {
+                button.disabled = false;
+                showModal('错误', error.message);
             }
         }
 
@@ -701,6 +817,7 @@
                             <div class="flex items-center space-x-2">
                                 <input type="number" 
                                        class="regular-score-input border border-gray-300 rounded px-2 py-1 w-20" 
+                                       min="0" max="100" step="0.01"
                                        value="${student.regular_score !== null ? student.regular_score : ''}" 
                                        placeholder="平时分"
                                        data-student-id="${student.ID}"
@@ -711,6 +828,7 @@
                                 <span class="text-sm text-gray-500">+</span>
                                 <input type="number" 
                                        class="final-score-input border border-gray-300 rounded px-2 py-1 w-20" 
+                                       min="0" max="100" step="0.01"
                                        value="${student.final_score !== null ? student.final_score : ''}" 
                                        placeholder="期末分"
                                        data-student-id="${student.ID}"
@@ -855,13 +973,17 @@
                 const regularInput = document.querySelector(`.regular-score-input[data-student-id="${studentId}"]`);
                 const finalInput = document.querySelector(`.final-score-input[data-student-id="${studentId}"]`);
                 
-                const weight = parseFloat(document.getElementById('weightRegular').value) || 3;
-                const weightFinal = parseFloat(document.getElementById('weightFinal').value) || 7;
-                const regularScore = parseFloat(regularInput.value) || 0;
-                const finalScore = parseFloat(finalInput.value) || 0;
+                const weight = parseFloat(document.getElementById('weightRegular').value);
+                const weightFinal = parseFloat(document.getElementById('weightFinal').value);
+                const regularScore = parseFloat(regularInput.value);
+                const finalScore = parseFloat(finalInput.value);
                 
-                if (isNaN(regularScore) || isNaN(finalScore)) {
-                    showModal('提示', '请输入有效的分数');
+                if (!Number.isFinite(regularScore) || !Number.isFinite(finalScore) || regularScore < 0 || regularScore > 100 || finalScore < 0 || finalScore > 100) {
+                    showModal('提示', '请输入 0 到 100 之间的平时分和期末分');
+                    return;
+                }
+                if (!Number.isFinite(weight) || !Number.isFinite(weightFinal) || weight <= 0 || weightFinal <= 0) {
+                    showModal('提示', '成绩权重必须是大于 0 的数字');
                     return;
                 }
                 
