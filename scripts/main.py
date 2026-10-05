@@ -111,11 +111,21 @@ class 成绩录入信息(BaseModel):
     班级编号: str = Field(..., description="班级ID")
     学期: str = Field(..., description="学期")
     学年: int = Field(..., description="学年")
-    平时分: Optional[float] = Field(None, description="平时成绩")
-    期末分: Optional[float] = Field(None, description="期末成绩")
-    权重平时: Optional[int] = Field(3, description="平时成绩权重")
-    权重期末: Optional[int] = Field(7, description="期末成绩权重")
+    平时分: Optional[float] = Field(None, ge=0, le=100, description="平时成绩")
+    期末分: Optional[float] = Field(None, ge=0, le=100, description="期末成绩")
+    权重平时: int = Field(3, gt=0, description="平时成绩权重")
+    权重期末: int = Field(7, gt=0, description="期末成绩权重")
     最终成绩: Optional[float] = Field(None, description="最终成绩")
+
+class 任课申请(BaseModel):
+    课程编号: str = Field(..., min_length=1, description="课程编号")
+    班级编号: str = Field(..., min_length=1, description="教学班编号")
+    学期: str = Field(..., min_length=1, description="学期")
+    学年: int = Field(..., ge=2000, le=2100, description="学年")
+
+class 教师资格变更(BaseModel):
+    教师ID: str = Field(..., min_length=1)
+    课程编号: str = Field(..., min_length=1)
 
 class 教学任务筛选(BaseModel):
     学期: Optional[str] = Field(None, description="学期")
@@ -304,6 +314,290 @@ def 更新教师联系方式(username: str, 表单: 联系方式更新):
         if 连接:
             连接.close()
 
+# 8.3 教师资格与任课申请
+@app.get("/teacher/qualifications/{username}", summary="获取教师资格课程", tags=["教师模块"])
+def 获取教师资格课程(username: str):
+    连接 = None
+    try:
+        连接 = 连接数据库()
+        游标 = 连接.cursor()
+        教师ID = 获取教师ID(username)
+        if not 教师ID:
+            raise HTTPException(status_code=404, detail="教师信息不存在")
+        游标.execute("""
+            SELECT iq.course_id, c.title AS course_name, c.dept_name,
+                   iq.approved_at
+            FROM instructor_qualification iq
+            JOIN course c ON c.course_id = iq.course_id
+            WHERE iq.teacher_id = %s
+            ORDER BY c.course_id
+        """, (教师ID,))
+        资格 = 游标.fetchall()
+        return {"状态": "成功", "教师ID": 教师ID, "资格课程": 资格}
+    except pymysql.MySQLError as 报错信息:
+        raise HTTPException(status_code=500, detail=f"查询教师资格失败: {str(报错信息)}")
+    finally:
+        if 连接:
+            连接.close()
+
+@app.get("/teacher/available-sections/{username}", summary="获取可申请任课的教学班", tags=["教师模块"])
+def 获取可申请教学班(username: str, 学期: Optional[str] = None, 学年: Optional[int] = None):
+    连接 = None
+    try:
+        连接 = 连接数据库()
+        游标 = 连接.cursor()
+        教师ID = 获取教师ID(username)
+        if not 教师ID:
+            raise HTTPException(status_code=404, detail="教师信息不存在")
+        条件 = ["iq.teacher_id = %s", "s.status IN ('PLANNED', 'OPEN')", "t.teacher_id IS NULL"]
+        参数 = [教师ID]
+        if 学期:
+            条件.append("s.semester = %s")
+            参数.append(学期)
+        if 学年:
+            条件.append("s.year = %s")
+            参数.append(学年)
+        游标.execute(f"""
+            SELECT s.course_id, s.sec_id, s.semester, s.year, s.capacity,
+                   s.building, s.room_number, s.day_of_week, s.start_period,
+                   s.end_period, c.title AS course_name, c.credits,
+                   CASE WHEN a.application_id IS NULL THEN 'NONE' ELSE a.status END AS application_status
+            FROM instructor_qualification iq
+            JOIN section s ON s.course_id = iq.course_id
+            JOIN course c ON c.course_id = s.course_id
+            LEFT JOIN teaches t ON t.course_id = s.course_id AND t.sec_id = s.sec_id
+                AND t.semester = s.semester AND t.year = s.year
+            LEFT JOIN teaching_application a ON a.teacher_id = iq.teacher_id
+                AND a.course_id = s.course_id AND a.sec_id = s.sec_id
+                AND a.semester = s.semester AND a.year = s.year
+            WHERE {' AND '.join(条件)}
+            ORDER BY s.year DESC, s.semester, s.course_id, s.sec_id
+        """, 参数)
+        return {"状态": "成功", "可申请教学班": 游标.fetchall()}
+    except pymysql.MySQLError as 报错信息:
+        raise HTTPException(status_code=500, detail=f"查询可申请教学班失败: {str(报错信息)}")
+    finally:
+        if 连接:
+            连接.close()
+
+@app.get("/teacher/applications/{username}", summary="查询教师任课申请", tags=["教师模块"])
+def 查询教师任课申请(username: str):
+    连接 = None
+    try:
+        连接 = 连接数据库()
+        游标 = 连接.cursor()
+        教师ID = 获取教师ID(username)
+        if not 教师ID:
+            raise HTTPException(status_code=404, detail="教师信息不存在")
+        游标.execute("""
+            SELECT a.application_id, a.course_id, c.title AS course_name,
+                   a.sec_id, a.semester, a.year, a.status, a.applied_at,
+                   a.reviewed_at
+            FROM teaching_application a
+            JOIN course c ON c.course_id = a.course_id
+            WHERE a.teacher_id = %s
+            ORDER BY a.applied_at DESC
+        """, (教师ID,))
+        return {"状态": "成功", "申请列表": 游标.fetchall()}
+    except pymysql.MySQLError as 报错信息:
+        raise HTTPException(status_code=500, detail=f"查询任课申请失败: {str(报错信息)}")
+    finally:
+        if 连接:
+            连接.close()
+
+@app.post("/teacher/applications/{username}", summary="提交任课申请", tags=["教师模块"])
+def 提交任课申请(username: str, 申请: 任课申请):
+    连接 = None
+    try:
+        连接 = 连接数据库()
+        游标 = 连接.cursor()
+        教师ID = 获取教师ID(username)
+        if not 教师ID:
+            raise HTTPException(status_code=404, detail="教师信息不存在")
+        游标.execute("""
+            SELECT 1 FROM instructor_qualification
+            WHERE teacher_id = %s AND course_id = %s
+        """, (教师ID, 申请.课程编号))
+        if not 游标.fetchone():
+            raise HTTPException(status_code=403, detail="你没有该课程的任课资格")
+        游标.execute("""
+            SELECT 1 FROM section
+            WHERE course_id = %s AND sec_id = %s AND semester = %s AND year = %s
+              AND status IN ('PLANNED', 'OPEN')
+        """, (申请.课程编号, 申请.班级编号, 申请.学期, 申请.学年))
+        if not 游标.fetchone():
+            raise HTTPException(status_code=404, detail="教学班不存在或当前不可申请")
+        游标.execute("""
+            SELECT 1 FROM teaches
+            WHERE course_id = %s AND sec_id = %s AND semester = %s AND year = %s
+        """, (申请.课程编号, 申请.班级编号, 申请.学期, 申请.学年))
+        if 游标.fetchone():
+            raise HTTPException(status_code=409, detail="该教学班已经有任课教师")
+        游标.execute("""
+            INSERT INTO teaching_application
+                (teacher_id, course_id, sec_id, semester, year, status)
+            VALUES (%s, %s, %s, %s, %s, 'PENDING')
+        """, (教师ID, 申请.课程编号, 申请.班级编号, 申请.学期, 申请.学年))
+        连接.commit()
+        return {"状态": "成功", "提示": "任课申请已提交，等待教务审核"}
+    except pymysql.err.IntegrityError:
+        if 连接:
+            连接.rollback()
+        raise HTTPException(status_code=409, detail="你已经申请过该教学班")
+    except pymysql.MySQLError as 报错信息:
+        if 连接:
+            连接.rollback()
+        raise HTTPException(status_code=500, detail=f"提交任课申请失败: {str(报错信息)}")
+    finally:
+        if 连接:
+            连接.close()
+
+@app.get("/admin/teaching-applications", summary="查看任课申请", tags=["管理员模块"])
+def 查看任课申请(状态: Optional[str] = None):
+    连接 = None
+    try:
+        连接 = 连接数据库()
+        游标 = 连接.cursor()
+        条件 = ""
+        参数 = []
+        if 状态:
+            条件 = "WHERE a.status = %s"
+            参数.append(状态.upper())
+        游标.execute(f"""
+            SELECT a.application_id, a.teacher_id, i.name AS teacher_name,
+                   a.course_id, c.title AS course_name, a.sec_id,
+                   a.semester, a.year, a.status, a.applied_at, a.reviewed_at
+            FROM teaching_application a
+            JOIN instructor i ON i.ID = a.teacher_id
+            JOIN course c ON c.course_id = a.course_id
+            {条件}
+            ORDER BY a.applied_at DESC
+        """, 参数)
+        return {"状态": "成功", "申请列表": 游标.fetchall()}
+    except pymysql.MySQLError as 报错信息:
+        raise HTTPException(status_code=500, detail=f"查询任课申请失败: {str(报错信息)}")
+    finally:
+        if 连接:
+            连接.close()
+
+@app.get("/admin/qualifications", summary="查看教师资格", tags=["管理员模块"])
+def 查看教师资格():
+    连接 = None
+    try:
+        连接 = 连接数据库()
+        游标 = 连接.cursor()
+        游标.execute("""
+            SELECT iq.teacher_id, i.name AS teacher_name, iq.course_id,
+                   c.title AS course_name, iq.approved_at
+            FROM instructor_qualification iq
+            JOIN instructor i ON i.ID = iq.teacher_id
+            JOIN course c ON c.course_id = iq.course_id
+            ORDER BY iq.teacher_id, iq.course_id
+        """)
+        return {"状态": "成功", "资格列表": 游标.fetchall()}
+    except pymysql.MySQLError as 报错信息:
+        raise HTTPException(status_code=500, detail=f"查询教师资格失败: {str(报错信息)}")
+    finally:
+        if 连接:
+            连接.close()
+
+@app.post("/admin/qualifications", summary="授予教师资格", tags=["管理员模块"])
+def 授予教师资格(资格: 教师资格变更):
+    连接 = None
+    try:
+        连接 = 连接数据库()
+        游标 = 连接.cursor()
+        游标.execute("SELECT 1 FROM instructor WHERE ID = %s", (资格.教师ID,))
+        if not 游标.fetchone():
+            raise HTTPException(status_code=404, detail="教师不存在")
+        游标.execute("SELECT 1 FROM course WHERE course_id = %s", (资格.课程编号,))
+        if not 游标.fetchone():
+            raise HTTPException(status_code=404, detail="课程不存在")
+        游标.execute("""
+            INSERT INTO instructor_qualification (teacher_id, course_id)
+            VALUES (%s, %s)
+            ON DUPLICATE KEY UPDATE approved_at = CURRENT_TIMESTAMP
+        """, (资格.教师ID, 资格.课程编号))
+        连接.commit()
+        return {"状态": "成功", "提示": "教师资格已保存"}
+    except pymysql.MySQLError as 报错信息:
+        if 连接:
+            连接.rollback()
+        raise HTTPException(status_code=500, detail=f"保存教师资格失败: {str(报错信息)}")
+    finally:
+        if 连接:
+            连接.close()
+
+@app.delete("/admin/qualifications/{teacher_id}/{course_id}", summary="撤销教师资格", tags=["管理员模块"])
+def 撤销教师资格(teacher_id: str, course_id: str):
+    连接 = None
+    try:
+        连接 = 连接数据库()
+        游标 = 连接.cursor()
+        游标.execute("""
+            DELETE FROM instructor_qualification
+            WHERE teacher_id = %s AND course_id = %s
+        """, (teacher_id, course_id))
+        if 游标.rowcount == 0:
+            raise HTTPException(status_code=404, detail="教师资格不存在")
+        连接.commit()
+        return {"状态": "成功", "提示": "教师资格已撤销"}
+    except pymysql.MySQLError as 报错信息:
+        if 连接:
+            连接.rollback()
+        raise HTTPException(status_code=500, detail=f"撤销教师资格失败: {str(报错信息)}")
+    finally:
+        if 连接:
+            连接.close()
+
+@app.put("/admin/teaching-applications/{application_id}", summary="审核任课申请", tags=["管理员模块"])
+def 审核任课申请(application_id: int, 审核信息: dict):
+    结果 = str(审核信息.get("status", "")).upper()
+    if 结果 not in {"APPROVED", "REJECTED"}:
+        raise HTTPException(status_code=400, detail="status 必须是 APPROVED 或 REJECTED")
+    连接 = None
+    try:
+        连接 = 连接数据库()
+        游标 = 连接.cursor()
+        游标.execute("""
+            SELECT teacher_id, course_id, sec_id, semester, year, status
+            FROM teaching_application
+            WHERE application_id = %s
+            FOR UPDATE
+        """, (application_id,))
+        申请记录 = 游标.fetchone()
+        if not 申请记录:
+            raise HTTPException(status_code=404, detail="任课申请不存在")
+        if 申请记录['status'] != 'PENDING':
+            raise HTTPException(status_code=409, detail="该申请已经审核过")
+        if 结果 == "APPROVED":
+            游标.execute("""
+                SELECT 1 FROM teaches
+                WHERE course_id = %s AND sec_id = %s AND semester = %s AND year = %s
+                FOR UPDATE
+            """, (申请记录['course_id'], 申请记录['sec_id'], 申请记录['semester'], 申请记录['year']))
+            if 游标.fetchone():
+                raise HTTPException(status_code=409, detail="该教学班已经被其他教师认领")
+            游标.execute("""
+                INSERT INTO teaches (teacher_id, course_id, sec_id, semester, year)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (申请记录['teacher_id'], 申请记录['course_id'], 申请记录['sec_id'],
+                   申请记录['semester'], 申请记录['year']))
+        游标.execute("""
+            UPDATE teaching_application
+            SET status = %s, reviewed_at = NOW()
+            WHERE application_id = %s
+        """, (结果, application_id))
+        连接.commit()
+        return {"状态": "成功", "提示": "任课申请审核完成", "审核结果": 结果}
+    except pymysql.MySQLError as 报错信息:
+        if 连接:
+            连接.rollback()
+        raise HTTPException(status_code=500, detail=f"审核任课申请失败: {str(报错信息)}")
+    finally:
+        if 连接:
+            连接.close()
+
 # 8.3 获取教学任务列表
 @app.get("/teacher/courses/{username}", summary="获取教学任务列表", tags=["教师模块"])
 def 获取教学任务列表(username: str, 学期: Optional[str] = None, 学年: Optional[int] = None):
@@ -385,7 +679,8 @@ def 获取班级学生名单(username: str, course_id: str, sec_id: str, semeste
         
         # 获取学生名单
         SQL语句 = """
-            SELECT s.ID, s.name, s.dept_name, tk.score, tk.regular_score, tk.final_score
+            SELECT s.ID, s.name, s.dept_name, tk.score, tk.regular_score,
+                   tk.final_score, tk.letter_grade, tk.status
             FROM takes tk
             JOIN student s ON tk.ID = s.ID
             WHERE tk.course_id = %s AND tk.sec_id = %s AND tk.semester = %s AND tk.year = %s
@@ -401,9 +696,11 @@ def 获取班级学生名单(username: str, course_id: str, sec_id: str, semeste
                 "ID": 学生['ID'],
                 "name": 学生['name'],
                 "dept_name": 学生['dept_name'],
-                "score": float(学生['score']) if 学生['score'] else None,
-                "regular_score": float(学生['regular_score']) if 学生['regular_score'] else None,
-                "final_score": float(学生['final_score']) if 学生['final_score'] else None
+                "score": float(学生['score']) if 学生['score'] is not None else None,
+                "regular_score": float(学生['regular_score']) if 学生['regular_score'] is not None else None,
+                "final_score": float(学生['final_score']) if 学生['final_score'] is not None else None,
+                "letter_grade": 学生.get('letter_grade'),
+                "status": 学生.get('status')
             }
             学生名单列表.append(学生信息)
         
@@ -455,24 +752,38 @@ def 录入学生成绩(username: str, 成绩信息: 成绩录入信息):
         if not 游标.fetchone():
             raise HTTPException(status_code=404, detail="学生不在该班级中")
         
-        # 计算最终成绩
-        权重平时 = 成绩信息.权重平时 if 成绩信息.权重平时 else 3
-        权重期末 = 成绩信息.权重期末 if 成绩信息.权重期末 else 7
-        平时分 = 成绩信息.平时分 if 成绩信息.平时分 is not None else 0
-        期末分 = 成绩信息.期末分 if 成绩信息.期末分 is not None else 0
+        # 计算最终成绩。服务端重新计算，避免信任浏览器传来的最终成绩。
+        if 成绩信息.平时分 is None or 成绩信息.期末分 is None:
+            raise HTTPException(status_code=400, detail="平时分和期末分都必须填写")
+        权重平时 = 成绩信息.权重平时
+        权重期末 = 成绩信息.权重期末
+        平时分 = 成绩信息.平时分
+        期末分 = 成绩信息.期末分
         
         总权重 = 权重平时 + 权重期末
         最终成绩 = (平时分 * 权重平时 / 总权重) + (期末分 * 权重期末 / 总权重)
+        if 最终成绩 >= 90:
+            等级 = 'A'
+        elif 最终成绩 >= 80:
+            等级 = 'B'
+        elif 最终成绩 >= 70:
+            等级 = 'C'
+        elif 最终成绩 >= 60:
+            等级 = 'D'
+        else:
+            等级 = 'F'
         
         # 录入成绩到数据库
         SQL语句 = """
             UPDATE takes 
             SET regular_score = %s, 
                 final_score = %s, 
-                score = %s
+                score = %s,
+                letter_grade = %s,
+                status = 'completed'
             WHERE ID = %s AND course_id = %s AND sec_id = %s AND semester = %s AND year = %s
         """
-        游标.execute(SQL语句, (平时分, 期末分, 最终成绩, 
+        游标.execute(SQL语句, (平时分, 期末分, 最终成绩, 等级,
                             成绩信息.学生学号, 成绩信息.课程编号, 
                             成绩信息.班级编号, 成绩信息.学期, 成绩信息.学年))
         连接.commit()
@@ -487,7 +798,8 @@ def 录入学生成绩(username: str, 成绩信息: 成绩录入信息):
                 "期末分": 期末分,
                 "权重平时": 权重平时,
                 "权重期末": 权重期末,
-                "最终成绩": round(最终成绩, 2)
+                "最终成绩": round(最终成绩, 2),
+                "等级": 等级
             }
         }
         
