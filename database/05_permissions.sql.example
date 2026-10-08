@@ -1,0 +1,6 @@
+-- 在 MySQL Workbench 中用 root 执行前，请自行设置一个全新的强密码。
+-- 这个账号只负责业务库读写，并只能读取课程目录；不能修改目录数据。
+CREATE USER IF NOT EXISTS 'course_reg_app'@'localhost' IDENTIFIED BY 'CHANGE_ME_TO_A_NEW_STRONG_PASSWORD';
+GRANT SELECT, INSERT, UPDATE, DELETE ON course_registration_v2.* TO 'course_reg_app'@'localhost';
+GRANT SELECT ON course_catalog_demo.* TO 'course_reg_app'@'localhost';
+-- 不要把包含真实密码的 SQL 文件提交到 GitHub。
