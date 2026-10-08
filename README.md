@@ -16,7 +16,7 @@
 
 3. 在 Workbench 打开 `database/05_permissions.sql.example`，把占位密码替换成新的强密码，再执行。该账号只可读取课程目录，并可读写业务数据库。如果该账号已存在且密码不对，请在 Workbench 中单独修改密码；`CREATE USER IF NOT EXISTS` 不会重置旧密码。
 
-4. 将 `.env.example` 复制为 `.env`，填上第 3 步的数据库密码，并将 `APP_SECRET` 换成自己生成的随机长字符串（至少 32 字符）。`.env` 已被 `.gitignore` 排除，不能上传 GitHub。例如：
+4. 将 `.env.example` 复制为 `.env`，填上第 3 步的数据库密码，将 `APP_SECRET` 换成自己生成的随机长字符串（至少 32 字符），并设置本地演示用的统一初始密码 `INITIAL_ACCOUNT_PASSWORD`（至少 10 位）。`.env` 已被 `.gitignore` 排除，不能上传 GitHub。例如：
 
    ```bash
    cp .env.example .env
@@ -63,7 +63,7 @@ python3 -m scripts.create_account teacher1 PROFESSOR --person-id P001
 python3 -m scripts.create_account registrar1 REGISTRAR
 ```
 
-打开 <http://127.0.0.1:8001/registrar> 登录。这里可以新增、查看、修改和确认删除学生/教师档案，并为教师添加或移除课程任教资格。新增时学号/教师编号由系统生成。仅未绑定账号、没有课表/授课/成绩历史的档案可物理删除；有历史记录时应停用，避免破坏外键和审计。学生有开放学期的已提交课表时不能停用；教师仍认领着未结束学期教学班时不能停用或移除对应资格。档案创建后如需登录账号，可再用 `scripts.create_account` 绑定生成的编号。
+打开 <http://127.0.0.1:8001/registrar> 登录。这里可以新增、查看、修改和确认删除学生/教师档案，并为教师添加或移除课程任教资格。新增时学号/教师编号由系统生成，同时自动建立登录账号（用户名为编号的小写形式）；新建学生和教师统一使用本机 `.env` 中的 `INITIAL_ACCOUNT_PASSWORD` 作为初始密码（至少 10 位），不要把实际值提交到 GitHub。教务创建成功后可在页面看到账号和初始密码，并交给本人；首次登录必须修改密码，此前不能使用选课或教学功能。已有账号不受影响，编辑档案不会重设密码。没有课表/授课/成绩或账号操作历史的档案可连同账号物理删除；有历史记录时应停用，避免破坏外键和审计。学生有开放学期的已提交课表时不能停用；教师仍认领着未结束学期教学班时不能停用或移除对应资格。已有的未绑定档案仍可用 `scripts.create_account` 手动建号。已有数据库升级前，用 Workbench 管理员连接执行一次 `database/10_initial_password.sql`；新装数据库的 `02_registration.sql` 已包含所需字段。不要重复执行迁移脚本。
 
 英文题目中的 `social security number` 指美国社会保障号，不等于中国身份证号。教务端可以录入、替换或清除**虚构演示 SSN**；后端校验为 9 位数字，用 Fernet 加密后写入 `ssn_encrypted`，API 只返回“是否已填写”，不回显号码。不要输入真实身份证号或真实 SSN：本地 HTTP 演示并非真实个人资料系统。加密密钥由 `APP_SECRET` 派生，须妥善保管且不要随意更换，否则已存密文无法还原。旧版数据库已有 `identity_number_encrypted` 列时，请用 Workbench 管理员连接执行一次 `database/08_rename_ssn_fields.sql`；新装数据库直接执行最新版 `database/02_registration.sql`，不需要迁移。
 

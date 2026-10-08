@@ -10,6 +10,11 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=10)
+
+
 class ChoiceInput(BaseModel):
     offering_id: str = Field(min_length=1, max_length=40)
     choice_type: Literal["PRIMARY", "ALTERNATE"]

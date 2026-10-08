@@ -10,10 +10,10 @@ from .billing import billing_status, dispatch_due
 from .catalog import availability_for_offerings, offerings_for_term
 from .closing import close_registration, preview_close
 from .config import ROOT
-from .db import read_connection
+from .db import read_connection, transaction
 from .grades import grade_offerings, report_card, roster, set_grade
 from .models import (
-    GradeInput, LoginRequest, ProfessorCreate, ProfessorPatch, ScheduleInput, StudentCreate, StudentPatch,
+    GradeInput, LoginRequest, PasswordChange, ProfessorCreate, ProfessorPatch, ScheduleInput, StudentCreate, StudentPatch,
     TermCreate, TermPatch,
 )
 from .professors import claim_offering, current_roster, release_offering, teacher_offerings
@@ -31,7 +31,7 @@ from .registrar import (
     update_student,
 )
 from .schedules import delete_schedule, get_schedule, save_draft, submit_schedule
-from .security import create_token, require_role, verify_password
+from .security import create_token, current_user, hash_password, require_role, verify_password
 from .terms import complete_term, create_term, open_term, terms, update_term
 
 
@@ -101,7 +101,7 @@ def health():
 def login(body: LoginRequest):
     with read_connection() as connection, connection.cursor() as cursor:
         cursor.execute(
-            "SELECT user_id,username,password_hash,role,is_active FROM user_account WHERE username=%s",
+            "SELECT user_id,username,password_hash,role,is_active,must_change_password FROM user_account WHERE username=%s",
             (body.username,),
         )
         user = cursor.fetchone()
@@ -112,7 +112,30 @@ def login(body: LoginRequest):
         "token_type": "bearer",
         "username": user["username"],
         "role": user["role"],
+        "must_change_password": bool(user["must_change_password"]),
     }
+
+
+@app.get("/api/auth/me")
+def auth_me(user: dict = Depends(current_user)):
+    return {"username": user["username"], "role": user["role"],
+            "must_change_password": bool(user["must_change_password"])}
+
+
+@app.post("/api/auth/change-password")
+def change_password(body: PasswordChange, user: dict = Depends(current_user)):
+    if body.current_password == body.new_password:
+        raise HTTPException(400, "新密码不能与原密码相同")
+    with transaction() as connection, connection.cursor() as cursor:
+        cursor.execute("SELECT password_hash FROM user_account WHERE user_id=%s FOR UPDATE", (user["user_id"],))
+        row = cursor.fetchone()
+        if not row or not verify_password(body.current_password, row["password_hash"]):
+            raise HTTPException(400, "原密码不正确")
+        cursor.execute(
+            "UPDATE user_account SET password_hash=%s,must_change_password=FALSE WHERE user_id=%s",
+            (hash_password(body.new_password), user["user_id"]),
+        )
+    return {"changed": True}
 
 
 @app.get("/api/catalog/offerings")

@@ -8,8 +8,10 @@ from fastapi import HTTPException
 from pymysql.err import IntegrityError
 
 from .catalog import CATALOG
+from .config import settings
 from .db import read_connection, transaction
 from .models import ProfessorCreate, ProfessorPatch, StudentCreate, StudentPatch
+from .security import hash_password
 from .ssn import encrypt_ssn
 
 
@@ -44,6 +46,20 @@ def _graduation(status: str, graduation_date: date | None) -> None:
 def _new_id(prefix: str) -> str:
     """随机编号由系统产生，数据库主键负责最终唯一性约束。"""
     return prefix + secrets.token_hex(7).upper()
+
+
+def _create_login(cursor, person_id: str, role: str) -> tuple[int, str, str]:
+    """与档案一起提交；统一初始密码从本机配置读取。"""
+    username = person_id.lower()
+    temporary_password = settings.initial_account_password
+    if len(temporary_password) < 10:
+        raise HTTPException(503, "请先在本机 .env 配置至少 10 位的统一初始密码")
+    cursor.execute(
+        "INSERT INTO user_account (username,password_hash,role,must_change_password) "
+        "VALUES (%s,%s,%s,TRUE)",
+        (username, hash_password(temporary_password), role),
+    )
+    return cursor.lastrowid, username, temporary_password
 
 
 def _department_exists(cursor, department_id: str) -> None:
@@ -82,18 +98,19 @@ def create_student(user_id: int, body: StudentCreate) -> dict:
         student_id = _new_id("S")
         try:
             with transaction() as connection, connection.cursor() as cursor:
+                account_id, username, temporary_password = _create_login(cursor, student_id, "STUDENT")
                 cursor.execute(
                     "INSERT INTO student_profile "
-                    "(student_id,full_name,date_of_birth,ssn_encrypted,status,graduation_date) "
-                    "VALUES (%s,%s,%s,%s,%s,%s)",
-                    (student_id, name, birth, encrypted, body.status, body.graduation_date),
+                    "(student_id,user_id,full_name,date_of_birth,ssn_encrypted,status,graduation_date) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                    (student_id, account_id, name, birth, encrypted, body.status, body.graduation_date),
                 )
                 _audit(cursor, user_id, "CREATE_STUDENT", "STUDENT", student_id)
         except IntegrityError as error:
             if error.args[0] == 1062:
                 continue
             raise
-        return student(student_id)
+        return {**student(student_id), "username": username, "temporary_password": temporary_password}
     raise HTTPException(503, "暂时无法生成唯一学号，请重试")
 
 
@@ -158,12 +175,16 @@ def delete_student(user_id: int, student_id: str) -> dict:
         row = cursor.fetchone()
         if not row:
             raise HTTPException(404, "学生不存在")
-        if row["user_id"] is not None:
-            raise HTTPException(409, "该学生已绑定登录账号，请保留档案并改为停用")
         cursor.execute("SELECT 1 FROM student_schedule WHERE student_id=%s LIMIT 1", (student_id,))
         if cursor.fetchone():
             raise HTTPException(409, "该学生已有课表历史，不能删除；请改为停用")
+        if row["user_id"] is not None:
+            cursor.execute("SELECT 1 FROM audit_log WHERE user_id=%s LIMIT 1", (row["user_id"],))
+            if cursor.fetchone():
+                raise HTTPException(409, "该学生账号已有操作记录，不能删除；请改为停用")
         cursor.execute("DELETE FROM student_profile WHERE student_id=%s", (student_id,))
+        if row["user_id"] is not None:
+            cursor.execute("DELETE FROM user_account WHERE user_id=%s", (row["user_id"],))
         _audit(cursor, user_id, "DELETE_STUDENT", "STUDENT", student_id)
     return {"deleted": True, "student_id": student_id}
 
@@ -215,18 +236,19 @@ def create_professor(user_id: int, body: ProfessorCreate) -> dict:
         try:
             with transaction() as connection, connection.cursor() as cursor:
                 _department_exists(cursor, body.department_id)
+                account_id, username, temporary_password = _create_login(cursor, professor_id, "PROFESSOR")
                 cursor.execute(
                     "INSERT INTO professor_profile "
-                    "(professor_id,full_name,date_of_birth,ssn_encrypted,status,department_id) "
-                    "VALUES (%s,%s,%s,%s,%s,%s)",
-                    (professor_id, name, birth, encrypted, body.status, body.department_id),
+                    "(professor_id,user_id,full_name,date_of_birth,ssn_encrypted,status,department_id) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                    (professor_id, account_id, name, birth, encrypted, body.status, body.department_id),
                 )
                 _audit(cursor, user_id, "CREATE_PROFESSOR", "PROFESSOR", professor_id)
         except IntegrityError as error:
             if error.args[0] == 1062:
                 continue
             raise
-        return professor(professor_id)
+        return {**professor(professor_id), "username": username, "temporary_password": temporary_password}
     raise HTTPException(503, "暂时无法生成唯一教师编号，请重试")
 
 
@@ -277,8 +299,6 @@ def delete_professor(user_id: int, professor_id: str) -> dict:
         row = cursor.fetchone()
         if not row:
             raise HTTPException(404, "教师不存在")
-        if row["user_id"] is not None:
-            raise HTTPException(409, "该教师已绑定登录账号，请保留档案并改为停用")
         cursor.execute("SELECT 1 FROM teaching_assignment WHERE professor_id=%s LIMIT 1", (professor_id,))
         if cursor.fetchone():
             raise HTTPException(409, "该教师有任教记录，不能删除；请改为停用")
@@ -288,8 +308,14 @@ def delete_professor(user_id: int, professor_id: str) -> dict:
         cursor.execute("SELECT 1 FROM enrollment WHERE graded_by=%s LIMIT 1", (professor_id,))
         if cursor.fetchone():
             raise HTTPException(409, "该教师有成绩记录，不能删除；请改为停用")
+        if row["user_id"] is not None:
+            cursor.execute("SELECT 1 FROM audit_log WHERE user_id=%s LIMIT 1", (row["user_id"],))
+            if cursor.fetchone():
+                raise HTTPException(409, "该教师账号已有操作记录，不能删除；请改为停用")
         cursor.execute("DELETE FROM professor_qualification WHERE professor_id=%s", (professor_id,))
         cursor.execute("DELETE FROM professor_profile WHERE professor_id=%s", (professor_id,))
+        if row["user_id"] is not None:
+            cursor.execute("DELETE FROM user_account WHERE user_id=%s", (row["user_id"],))
         _audit(cursor, user_id, "DELETE_PROFESSOR", "PROFESSOR", professor_id)
     return {"deleted": True, "professor_id": professor_id}
 

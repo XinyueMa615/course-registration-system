@@ -4,6 +4,8 @@
 """
 import os
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -13,12 +15,12 @@ from app.catalog import availability_for_offerings
 from app.models import ProfessorCreate, ProfessorPatch, StudentCreate, StudentPatch
 from app.professors import claim_offering, release_offering, teacher_offerings
 from app.registrar import (
-    add_qualification, create_professor, create_student, delete_professor, delete_student,
+    _create_login, add_qualification, create_professor, create_student, delete_professor, delete_student,
     professor, remove_qualification, student, update_professor, update_student,
 )
 from app.ssn import encrypt_ssn
 from app.schedules import _validate_positions, delete_schedule, get_schedule, save_draft, submit_schedule
-from app.security import hash_password, verify_password
+from app.security import hash_password, require_role, verify_password
 
 
 class PureRulesTest(unittest.TestCase):
@@ -36,6 +38,27 @@ class PureRulesTest(unittest.TestCase):
         digest = hash_password("testing-password-123")
         self.assertTrue(verify_password("testing-password-123", digest))
         self.assertFalse(verify_password("wrong-password", digest))
+
+    def test_temporary_password_blocks_role_endpoints(self):
+        student_access = require_role("STUDENT")
+        with self.assertRaises(HTTPException) as blocked:
+            student_access({"role": "STUDENT", "must_change_password": True})
+        self.assertEqual(blocked.exception.status_code, 403)
+        self.assertEqual(student_access({"role": "STUDENT", "must_change_password": False})["role"], "STUDENT")
+
+    def test_new_accounts_use_configured_shared_initial_password(self):
+        class Cursor:
+            lastrowid = 42
+
+            def execute(self, query, params):
+                self.query, self.params = query, params
+
+        cursor = Cursor()
+        with patch("app.registrar.settings", SimpleNamespace(initial_account_password="Testing@2026")):
+            account_id, username, password = _create_login(cursor, "SABC", "STUDENT")
+        self.assertEqual((account_id, username, password), (42, "sabc", "Testing@2026"))
+        self.assertTrue(verify_password(password, cursor.params[1]))
+        self.assertIn("must_change_password", cursor.query)
 
     def test_submit_requires_exact_positions(self):
         with self.assertRaises(HTTPException):
@@ -75,6 +98,9 @@ class DatabaseFlowTest(unittest.TestCase):
         self.assertTrue(student_id.startswith("S"))
         self.assertEqual(created["full_name"], "测试学生")
         self.assertTrue(created["has_ssn"])
+        self.assertTrue(created["has_account"])
+        self.assertEqual(created["username"], student_id.lower())
+        self.assertGreaterEqual(len(created["temporary_password"]), 10)
         with self.assertRaises(HTTPException):
             update_student(user_id, student_id, StudentPatch(status="GRADUATED"))
         updated = update_student(user_id, student_id, StudentPatch(
@@ -83,20 +109,6 @@ class DatabaseFlowTest(unittest.TestCase):
         self.assertEqual(updated["status"], "GRADUATED")
         self.assertFalse(updated["has_ssn"])
         self.assertEqual(student(student_id)["graduation_date"], date(2026, 6, 1))
-        with transaction() as connection, connection.cursor() as cursor:
-            cursor.execute(
-                "INSERT INTO user_account (username,password_hash,role) VALUES (%s,'test-only','STUDENT')",
-                (f"student_delete_guard_{suffix}",),
-            )
-            cursor.execute(
-                "UPDATE student_profile SET user_id=%s WHERE student_id=%s",
-                (cursor.lastrowid, student_id),
-            )
-        with self.assertRaises(HTTPException) as bound_student:
-            delete_student(user_id, student_id)
-        self.assertEqual(bound_student.exception.status_code, 409)
-        with transaction() as connection, connection.cursor() as cursor:
-            cursor.execute("UPDATE student_profile SET user_id=NULL WHERE student_id=%s", (student_id,))
         self.assertTrue(delete_student(user_id, student_id)["deleted"])
         with self.assertRaises(HTTPException):
             student(student_id)
@@ -113,24 +125,12 @@ class DatabaseFlowTest(unittest.TestCase):
         professor_id = created_professor["professor_id"]
         self.assertTrue(professor_id.startswith("P"))
         self.assertEqual(created_professor["department_id"], "CS")
+        self.assertTrue(created_professor["has_account"])
+        self.assertEqual(created_professor["username"], professor_id.lower())
         self.assertIn("CS101", add_qualification(user_id, professor_id, "CS101")["qualifications"])
         self.assertNotIn("CS101", remove_qualification(user_id, professor_id, "CS101")["qualifications"])
         self.assertEqual(update_professor(user_id, professor_id, ProfessorPatch(status="INACTIVE"))["status"], "INACTIVE")
         self.assertEqual(professor(professor_id)["status"], "INACTIVE")
-        with transaction() as connection, connection.cursor() as cursor:
-            cursor.execute(
-                "INSERT INTO user_account (username,password_hash,role) VALUES (%s,'test-only','PROFESSOR')",
-                (f"professor_delete_guard_{suffix}",),
-            )
-            cursor.execute(
-                "UPDATE professor_profile SET user_id=%s WHERE professor_id=%s",
-                (cursor.lastrowid, professor_id),
-            )
-        with self.assertRaises(HTTPException) as bound_professor:
-            delete_professor(user_id, professor_id)
-        self.assertEqual(bound_professor.exception.status_code, 409)
-        with transaction() as connection, connection.cursor() as cursor:
-            cursor.execute("UPDATE professor_profile SET user_id=NULL WHERE professor_id=%s", (professor_id,))
         self.assertTrue(delete_professor(user_id, professor_id)["deleted"])
 
     def test_teacher_flow(self):

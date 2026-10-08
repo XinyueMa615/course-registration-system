@@ -31,6 +31,7 @@ class Settings:
     db_name: str = os.getenv("DB_NAME", "course_registration_v2")
     catalog_db: str = os.getenv("CATALOG_DB", "course_catalog_demo")
     app_secret: str = os.getenv("APP_SECRET", "")
+    initial_account_password: str = os.getenv("INITIAL_ACCOUNT_PASSWORD", "")
 
 
 settings = Settings()

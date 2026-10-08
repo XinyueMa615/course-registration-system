@@ -74,7 +74,7 @@ def current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(b
     except (ValueError, KeyError, TypeError, binascii.Error, json.JSONDecodeError):
         raise unauthorized from None
     with read_connection() as connection, connection.cursor() as cursor:
-        cursor.execute("SELECT user_id, username, role, is_active FROM user_account WHERE user_id=%s", (user_id,))
+        cursor.execute("SELECT user_id, username, role, is_active, must_change_password FROM user_account WHERE user_id=%s", (user_id,))
         user = cursor.fetchone()
     if not user or not user["is_active"] or user["role"] != payload.get("role"):
         raise unauthorized
@@ -83,6 +83,8 @@ def current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(b
 
 def require_role(*roles: str):
     def dependency(user: dict = Depends(current_user)) -> dict:
+        if user["must_change_password"]:
+            raise HTTPException(status_code=403, detail="请先修改初始密码")
         if user["role"] not in roles:
             raise HTTPException(status_code=403, detail="没有执行此操作的权限")
         return user
