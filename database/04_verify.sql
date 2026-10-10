@@ -42,10 +42,11 @@ FROM course_registration_v2.teaching_assignment a
 JOIN course_registration_v2.professor_profile p ON p.professor_id=a.professor_id
 ORDER BY a.offering_id;
 
-SELECT term_code,status,COUNT(*) AS bill_count,SUM(amount) AS total_amount
-FROM course_registration_v2.billing_outbox
-GROUP BY term_code,status
-ORDER BY term_code,status;
+SELECT s.term_code,b.status,COUNT(*) AS bill_count,SUM(b.amount) AS total_amount
+FROM course_registration_v2.billing_outbox b
+JOIN course_registration_v2.student_schedule s ON s.schedule_id=b.schedule_id
+GROUP BY s.term_code,b.status
+ORDER BY s.term_code,b.status;
 
 -- S001 应是 DRAFT，主选4、备选2；草稿不占容量。
 SELECT s.student_id,s.term_code,s.status,
