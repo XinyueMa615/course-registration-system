@@ -226,6 +226,10 @@ main > [data-view] { grid-column: 2; }
 .toolbar select { min-width: 210px; }
 
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.registrar-page .billing-controls { align-items: flex-end; }
+.registrar-page .billing-controls button { min-height: 42px; }
+.registrar-page .profile-search { align-items: flex-end; }
+.registrar-page .profile-search button { min-height: 42px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 13px; }
 
 label { display: block; color: #3d4e5b; font-size: 13px; font-weight: 700; }
@@ -286,6 +290,11 @@ button.danger:hover { background: #fff4f4; }
 .offering strong, .entry strong, .choice strong { color: var(--ink); }
 .offering small, .entry small, .choice small, .grade-row small { color: var(--muted); line-height: 1.55; }
 
+.professor-page #offerings .offering-actions { justify-content: flex-end; align-items: flex-start; }
+.professor-page #offerings .offering-action { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.professor-page #offerings .offering-feedback { max-width: 260px; color: var(--brand-dark); font-weight: 700; }
+.professor-page #offerings .offering-feedback.error { color: var(--danger); }
+
 .student-page #catalog,
 .student-page #choices,
 .registrar-page #students,
@@ -295,6 +304,9 @@ button.danger:hover { background: #fff4f4; }
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
+
+.registrar-page #students,
+.registrar-page #professors { grid-template-columns: minmax(0, 1fr); }
 
 .student-page #catalog .offering,
 .student-page #choices .choice,
