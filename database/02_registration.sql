@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS user_account (
   username VARCHAR(60) NOT NULL UNIQUE,
   password_hash VARCHAR(255) NOT NULL COMMENT '仅存 PBKDF2-SHA256 密码哈希，不保存明文密码',
   must_change_password BOOLEAN NOT NULL DEFAULT FALSE COMMENT '临时密码首次登录后必须修改',
+  session_version INT UNSIGNED NOT NULL DEFAULT 0 COMMENT '退出登录时递增，使旧会话令牌立即失效',
   role ENUM('STUDENT','PROFESSOR','REGISTRAR') NOT NULL,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP

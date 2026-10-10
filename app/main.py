@@ -4,8 +4,9 @@ from contextlib import asynccontextmanager
 import logging
 from time import perf_counter
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
+from pymysql import MySQLError
 
 from .billing import billing_status, dispatch_due
 from .catalog import CATALOG, availability_for_offerings, offerings_for_term
@@ -69,6 +70,16 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="课程注册系统", version="0.5.0", lifespan=lifespan)
+
+
+@app.exception_handler(MySQLError)
+async def database_unavailable(_request: Request, error: MySQLError):
+    """数据库或只读课程目录不可用时，返回稳定的 JSON，不泄露 SQL 细节。"""
+    logger.error("数据库请求失败：%s", type(error).__name__)
+    return JSONResponse(
+        {"detail": "数据库或课程目录暂时不可用，请稍后重试"},
+        status_code=503,
+    )
 
 
 def _account_identity(cursor, user: dict) -> dict:
@@ -164,7 +175,8 @@ def login(body: LoginRequest):
     username = body.username.strip()
     with read_connection() as connection, connection.cursor() as cursor:
         cursor.execute(
-            "SELECT user_id,username,password_hash,role,is_active,must_change_password FROM user_account WHERE username=%s",
+            "SELECT user_id,username,password_hash,role,is_active,must_change_password,session_version "
+            "FROM user_account WHERE username=%s",
             (username,),
         )
         user = cursor.fetchone()
@@ -175,7 +187,7 @@ def login(body: LoginRequest):
             raise HTTPException(401, "账号或密码错误")
         identity = _account_identity(cursor, user)
     return {
-        "access_token": create_token(user["user_id"], user["role"]),
+        "access_token": create_token(user["user_id"], user["role"], user["session_version"]),
         "token_type": "bearer",
         "username": user["username"],
         "role": user["role"],
@@ -190,6 +202,22 @@ def auth_me(user: dict = Depends(current_user)):
         identity = _account_identity(cursor, user)
     return {"username": user["username"], "role": user["role"],
             "must_change_password": bool(user["must_change_password"]), **identity}
+
+
+@app.post("/api/auth/logout")
+def logout(user: dict = Depends(current_user)):
+    """服务端注销会话；不仅依赖浏览器删除本地令牌。"""
+    with transaction() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "UPDATE user_account SET session_version=session_version+1 WHERE user_id=%s",
+            (user["user_id"],),
+        )
+        cursor.execute(
+            "INSERT INTO audit_log (user_id,action,entity_type,entity_id) "
+            "VALUES (%s,'LOGOUT','USER',%s)",
+            (user["user_id"], str(user["user_id"])),
+        )
+    return {"logged_out": True}
 
 
 @app.post("/api/auth/change-password")

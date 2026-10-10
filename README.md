@@ -52,9 +52,10 @@ cd course-registration-system
 
 ### 已有数据库升级
 
-全新安装只执行上述 `01_catalog.sql`、`02_registration.sql`、`03_demo.sql`，**不要再执行迁移脚本**。旧版数据库应先检查表和列，再按缺少的内容在 Workbench 管理员连接中执行：`07_billing_mock.sql` 增加模拟计费收件表；`08_rename_ssn_fields.sql` 把旧的 `identity_number_encrypted` 列改名；`09_term_completion.sql` 增加学期教学完成时间；`10_initial_password.sql` 增加首次登录改密标记。`08`、`09`、`10` 不能重复执行；不确定是否已迁移时，先查看 Workbench 的表结构，不要直接重跑或重新建库。迁移不会自动复制你电脑里的账号、密码或选课记录到队友电脑。
+全新安装只执行上述 `01_catalog.sql`、`02_registration.sql`、`03_demo.sql`，**不要再执行迁移脚本**。旧版数据库应先检查表和列，再按缺少的内容在 Workbench 管理员连接中执行：`07_billing_mock.sql` 增加模拟计费收件表；`08_rename_ssn_fields.sql` 把旧的 `identity_number_encrypted` 列改名；`09_term_completion.sql` 增加学期教学完成时间；`10_initial_password.sql` 增加首次登录改密标记；`11_session_logout.sql` 增加服务端会话版本，使退出后的旧令牌立即失效。`08`、`09`、`10`、`11` 不能重复执行；不确定是否已迁移时，先查看 Workbench 的表结构，不要直接重跑或重新建库。迁移不会自动复制你电脑里的账号、密码或选课记录到队友电脑。
 
 学生选课页面会在填写课表时每 20 秒检查一次已选教学班的最新名额，并在主选已满或关闭时提示调整；点击提交前还会再次检查。真正占用名额的并发校验仍在数据库事务中进行，页面提示不能替代它。开放期内“删除课表”会先请学生确认，再删除选择并释放已提交主选的名额；截止后的最终课表不能删除。
+退出登录会同时清理浏览器令牌并递增服务端会话版本，退出前签发的令牌不能继续访问受保护接口。数据库或课程目录暂时断开时，API 会返回不包含 SQL 细节的 503 中文错误。
 
 ## 教师端演示
 

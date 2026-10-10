@@ -49,10 +49,17 @@ def verify_password(password: str, stored: str) -> bool:
         return False
 
 
-def create_token(user_id: int, role: str, duration_seconds: int = 8 * 3600) -> str:
+def create_token(
+    user_id: int, role: str, session_version: int = 0, duration_seconds: int = 8 * 3600
+) -> str:
     if len(settings.app_secret) < 32:
         raise RuntimeError("APP_SECRET must be at least 32 characters")
-    payload = {"uid": user_id, "role": role, "exp": int(time.time()) + duration_seconds}
+    payload = {
+        "uid": user_id,
+        "role": role,
+        "sv": session_version,
+        "exp": int(time.time()) + duration_seconds,
+    }
     body = _b64(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
     signature = hmac.new(settings.app_secret.encode(), body.encode(), hashlib.sha256).digest()
     return f"{body}.{_b64(signature)}"
@@ -74,9 +81,14 @@ def current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(b
     except (ValueError, KeyError, TypeError, binascii.Error, json.JSONDecodeError):
         raise unauthorized from None
     with read_connection() as connection, connection.cursor() as cursor:
-        cursor.execute("SELECT user_id, username, role, is_active, must_change_password FROM user_account WHERE user_id=%s", (user_id,))
+        cursor.execute(
+            "SELECT user_id,username,role,is_active,must_change_password,session_version "
+            "FROM user_account WHERE user_id=%s",
+            (user_id,),
+        )
         user = cursor.fetchone()
-    if not user or not user["is_active"] or user["role"] != payload.get("role"):
+    if (not user or not user["is_active"] or user["role"] != payload.get("role")
+            or user["session_version"] != payload.get("sv")):
         raise unauthorized
     return user
 
