@@ -6,6 +6,7 @@ from time import perf_counter
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
+from pymysql.err import InterfaceError, OperationalError
 
 from .billing import billing_status, dispatch_due
 from .catalog import CATALOG, availability_for_offerings, offerings_for_term
@@ -32,7 +33,7 @@ from .registrar import (
     update_student,
 )
 from .schedules import delete_schedule, get_schedule, save_draft, submit_schedule
-from .security import create_token, current_user, hash_password, require_role, verify_password
+from .security import create_token, current_user, hash_password, require_role, revoke_session, verify_password
 from .terms import complete_term, create_term, open_term, terms, update_term
 
 
@@ -68,7 +69,14 @@ async def lifespan(app: FastAPI):
             pass
 
 
-app = FastAPI(title="课程注册系统", version="0.5.0", lifespan=lifespan)
+app = FastAPI(title="课程注册系统", version="0.6.0", lifespan=lifespan)
+
+
+@app.exception_handler(OperationalError)
+@app.exception_handler(InterfaceError)
+async def database_unavailable(_request, error: OperationalError | InterfaceError):
+    logger.error("数据库或课程目录暂不可用：%s", type(error).__name__)
+    return JSONResponse({"detail": "数据库或课程目录暂不可用，请稍后重试"}, status_code=503)
 
 
 def _account_identity(cursor, user: dict) -> dict:
@@ -168,6 +176,18 @@ def login(body: LoginRequest):
             (username,),
         )
         user = cursor.fetchone()
+        if not user:
+            cursor.execute(
+                "SELECT u.user_id,u.username,u.password_hash,u.role,u.is_active,u.must_change_password "
+                "FROM user_account u LEFT JOIN student_profile s ON s.user_id=u.user_id "
+                "LEFT JOIN professor_profile p ON p.user_id=u.user_id "
+                "WHERE s.full_name=%s OR p.full_name=%s LIMIT 2",
+                (username, username),
+            )
+            matches = cursor.fetchall()
+            if len(matches) > 1:
+                raise HTTPException(409, "该姓名对应多个账号，请使用用户名登录")
+            user = matches[0] if matches else None
         password_matches = verify_password(
             body.password, user["password_hash"] if user else _DUMMY_PASSWORD_HASH
         )
@@ -182,6 +202,12 @@ def login(body: LoginRequest):
         "must_change_password": bool(user["must_change_password"]),
         **identity,
     }
+
+
+@app.post("/api/auth/logout")
+def logout(user: dict = Depends(current_user)):
+    revoke_session(user["session_id"], user["user_id"])
+    return {"logged_out": True}
 
 
 @app.get("/api/auth/me")
@@ -219,8 +245,8 @@ def catalog(term_code: str, user: dict = Depends(require_role("STUDENT", "PROFES
 
 
 @app.get("/api/students/me/schedules/{term_code}")
-def schedule(term_code: str, user: dict = Depends(require_role("STUDENT"))):
-    return get_schedule(user["user_id"], term_code)
+def schedule(term_code: str, require_existing: bool = True, user: dict = Depends(require_role("STUDENT"))):
+    return get_schedule(user["user_id"], term_code, require_existing=require_existing)
 
 
 @app.put("/api/students/me/schedules/{term_code}/draft")

@@ -1,4 +1,5 @@
 -- 已有数据库只需执行一次；新装数据库的 02_registration.sql 已包含本字段。
+SET NAMES utf8mb4;
 USE course_registration_v2;
 ALTER TABLE user_account
   ADD COLUMN must_change_password BOOLEAN NOT NULL DEFAULT FALSE

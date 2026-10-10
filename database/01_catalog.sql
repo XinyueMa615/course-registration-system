@@ -1,5 +1,6 @@
 -- 课程设计题目的“旧课程目录”模拟库。真实部署时应替换为旧系统只读接口。
 -- MySQL 8.0.16+；本文件只初始化演示目录，不由注册系统运行时执行写入。
+SET NAMES utf8mb4;
 CREATE DATABASE IF NOT EXISTS course_catalog_demo
   CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE course_catalog_demo;

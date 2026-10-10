@@ -1,4 +1,5 @@
 -- 无真实个人资料和密码的本地演示数据；先执行 01_catalog.sql、02_registration.sql。
+SET NAMES utf8mb4;
 USE course_catalog_demo;
 
 INSERT INTO department (department_id,name) VALUES

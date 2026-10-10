@@ -23,7 +23,13 @@ def grade_offerings(user_id: int) -> dict:
         professor_id = _professor_id(cursor, user_id)
         term_code = _previous_completed_term(cursor)
         if not term_code:
-            return {"term_code": None, "offerings": []}
+            cursor.execute(
+                "SELECT term_code FROM academic_term WHERE status='CLOSED' AND completed_at IS NULL "
+                "ORDER BY year DESC, FIELD(semester,'SPRING','SUMMER','FALL','WINTER') DESC LIMIT 1"
+            )
+            pending = cursor.fetchone()
+            return {"term_code": None, "offerings": [],
+                    "pending_term_code": pending["term_code"] if pending else None}
         cursor.execute(
             f"SELECT r.offering_id,o.course_id,o.section_code,c.title "
             f"FROM teaching_assignment a JOIN offering_registration_state r ON r.offering_id=a.offering_id "
@@ -34,7 +40,7 @@ def grade_offerings(user_id: int) -> dict:
             (professor_id, term_code),
         )
         offerings = list(cursor.fetchall())
-    return {"term_code": term_code, "offerings": offerings}
+    return {"term_code": term_code, "offerings": offerings, "pending_term_code": None}
 
 
 def _owned_closed_offering(cursor, professor_id: str, term_code: str, offering_id: str) -> dict:

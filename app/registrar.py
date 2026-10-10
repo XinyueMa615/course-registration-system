@@ -205,6 +205,7 @@ def delete_student(user_id: int, student_id: str) -> dict:
                 raise HTTPException(409, "该学生账号已有操作记录，不能删除；请改为停用")
         cursor.execute("DELETE FROM student_profile WHERE student_id=%s", (student_id,))
         if row["user_id"] is not None:
+            cursor.execute("DELETE FROM auth_session WHERE user_id=%s", (row["user_id"],))
             cursor.execute("DELETE FROM user_account WHERE user_id=%s", (row["user_id"],))
         _audit(cursor, user_id, "DELETE_STUDENT", "STUDENT", student_id)
     return {"deleted": True, "student_id": student_id}
@@ -348,6 +349,7 @@ def delete_professor(user_id: int, professor_id: str) -> dict:
         cursor.execute("DELETE FROM professor_qualification WHERE professor_id=%s", (professor_id,))
         cursor.execute("DELETE FROM professor_profile WHERE professor_id=%s", (professor_id,))
         if row["user_id"] is not None:
+            cursor.execute("DELETE FROM auth_session WHERE user_id=%s", (row["user_id"],))
             cursor.execute("DELETE FROM user_account WHERE user_id=%s", (row["user_id"],))
         _audit(cursor, user_id, "DELETE_PROFESSOR", "PROFESSOR", professor_id)
     return {"deleted": True, "professor_id": professor_id}

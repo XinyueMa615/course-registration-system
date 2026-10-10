@@ -1,4 +1,5 @@
 -- Workbench 中执行：应显示 5 张目录表、15 张业务表、1 个视图。
+SET NAMES utf8mb4;
 SELECT table_schema,table_name,table_type
 FROM information_schema.tables
 WHERE table_schema IN ('course_catalog_demo','course_registration_v2')

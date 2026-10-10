@@ -8,6 +8,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import json
 
 from fastapi import HTTPException
+from pymysql.err import OperationalError
 
 from .catalog import CATALOG
 from .db import read_connection, transaction
@@ -17,11 +18,16 @@ GRADE_VALUE = {"A": 4, "B": 3, "C": 2, "D": 1}
 
 
 def _term(cursor, term_code: str, *, lock: bool) -> dict:
-    cursor.execute(
-        "SELECT term_code,status,registration_opens_at,registration_closes_at,tuition_per_credit "
-        "FROM academic_term WHERE term_code=%s" + (" FOR UPDATE" if lock else ""),
-        (term_code,),
-    )
+    try:
+        cursor.execute(
+            "SELECT term_code,status,registration_opens_at,registration_closes_at,tuition_per_credit "
+            "FROM academic_term WHERE term_code=%s" + (" FOR UPDATE NOWAIT" if lock else ""),
+            (term_code,),
+        )
+    except OperationalError as error:
+        if lock and error.args[0] == 3572:
+            raise HTTPException(409, "该学期注册关闭正在处理，请稍后查看结果") from None
+        raise
     row = cursor.fetchone()
     if not row:
         raise HTTPException(404, "学期不存在")
@@ -269,6 +275,12 @@ def preview_close(term_code: str) -> dict:
 
 def close_registration(user_id: int, term_code: str) -> dict:
     with transaction() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT status FROM registration_close_run WHERE term_code=%s AND status='RUNNING' LIMIT 1",
+            (term_code,),
+        )
+        if cursor.fetchone():
+            raise HTTPException(409, "该学期注册关闭正在处理，请稍后查看结果")
         term = _term(cursor, term_code, lock=True)
         if datetime.now() <= term["registration_closes_at"]:
             raise HTTPException(409, "选课仍在进行，截止时间到了之后才能正式关闭")

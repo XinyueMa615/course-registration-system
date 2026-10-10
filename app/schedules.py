@@ -264,7 +264,7 @@ def delete_schedule(user_id: int, term_code: str) -> dict:
     return {"term_code": term_code, "status": "EMPTY", "choices": []}
 
 
-def get_schedule(user_id: int, term_code: str) -> dict:
+def get_schedule(user_id: int, term_code: str, *, require_existing: bool = False) -> dict:
     with read_connection() as connection, connection.cursor() as cursor:
         student_id = student_id_for_user(cursor, user_id)
         cursor.execute(
@@ -294,6 +294,8 @@ def get_schedule(user_id: int, term_code: str) -> dict:
         )
         schedule = cursor.fetchone()
         if not schedule or schedule["status"] == "DELETED":
+            if require_existing:
+                raise HTTPException(404, "当前学期尚无已保存的课表")
             return {**context, "status": "EMPTY", "choices": []}
         cursor.execute(
             "SELECT c.choice_id,c.offering_id,c.choice_type,c.priority,c.status,e.status AS enrollment_status "

@@ -1,5 +1,6 @@
 -- 新课程注册业务库。只保存本系统可修改的数据；课程/教学班由目录库只读提供。
 -- MySQL 8.0.16+，InnoDB。业务服务必须在事务中完成容量、冲突与权限检查。
+SET NAMES utf8mb4;
 CREATE DATABASE IF NOT EXISTS course_registration_v2
   CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE course_registration_v2;
@@ -12,6 +13,16 @@ CREATE TABLE IF NOT EXISTS user_account (
   role ENUM('STUDENT','PROFESSOR','REGISTRAR') NOT NULL,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS auth_session (
+  session_id CHAR(43) PRIMARY KEY,
+  user_id BIGINT UNSIGNED NOT NULL,
+  expires_at DATETIME NOT NULL,
+  revoked_at DATETIME NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_auth_session_user (user_id, revoked_at),
+  CONSTRAINT fk_auth_session_user FOREIGN KEY (user_id) REFERENCES user_account(user_id)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS student_profile (
@@ -222,9 +233,9 @@ CREATE TABLE IF NOT EXISTS audit_log (
   CONSTRAINT fk_v2_audit_user FOREIGN KEY (user_id) REFERENCES user_account(user_id)
 ) ENGINE=InnoDB;
 
--- 成绩单必须只展示已完成且已录入成绩的课程；请求仍须按登录学生过滤。
+-- 成绩单展示最终有效课程；未录入成绩的课程保留空成绩。
 CREATE OR REPLACE VIEW v_report_card AS
 SELECT s.student_id, s.term_code, e.offering_id, e.letter_grade, e.graded_at
 FROM enrollment e
 JOIN student_schedule s ON s.schedule_id = e.schedule_id
-WHERE e.status = 'COMPLETED' AND e.letter_grade IS NOT NULL;
+WHERE s.status = 'FINALIZED' AND e.status IN ('COMMITTED','COMPLETED');
