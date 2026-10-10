@@ -76,6 +76,11 @@ def index():
     return FileResponse(ROOT / "web" / "index.html", headers={"Cache-Control": "no-store"})
 
 
+@app.get("/student")
+def student_page():
+    return FileResponse(ROOT / "web" / "index.html", headers={"Cache-Control": "no-store"})
+
+
 @app.get("/assets/theme.css")
 def theme():
     return FileResponse(ROOT / "web" / "theme.css", media_type="text/css", headers={"Cache-Control": "no-store"})

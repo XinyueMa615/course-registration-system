@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>课程注册系统 · 学生端</title>
+  <title>课程注册系统 · 登录入口</title>
   <style>
     :root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#172536;background:#f3f6fa}
     *{box-sizing:border-box}body{margin:0}[hidden]{display:none!important}.wrap{max-width:1120px;margin:auto;padding:26px 18px 60px}
@@ -24,10 +24,16 @@
   <link rel="stylesheet" href="/assets/theme.css">
 </head>
 <body class="student-page"><div class="wrap">
-  <header><div><div class="eyebrow">课程注册系统 · 学生端</div><h1>学生选课中心</h1><div class="muted">查询课程、规划志愿并跟踪学习记录</div></div><div class="row"><button id="changePasswordButton" class="secondary" hidden>修改密码</button><button id="logout" class="secondary" hidden>退出登录</button></div></header>
+  <header><div><div id="portalEyebrow" class="eyebrow">课程注册系统 · 统一入口</div><h1 id="portalTitle">请选择登录身份</h1><div id="portalSubtitle" class="muted">学生、教师和教务员使用各自的工作台</div></div><div class="row"><button id="changePasswordButton" class="secondary" hidden>修改密码</button><button id="logout" class="secondary" hidden>退出登录</button></div></header>
   <div id="message" role="status"></div>
   <section id="loginPanel" class="card">
-    <span class="section-note">账号登录</span><h2>登录工作台</h2><form id="loginForm" class="row">
+    <span class="section-note">统一身份认证</span><h2>登录工作台</h2>
+    <nav class="portal-switch" aria-label="选择登录入口">
+      <a class="portal-link active" href="/student"><strong>学生端</strong><span>选课、课表与成绩</span></a>
+      <a class="portal-link" href="/professor"><strong>教师端</strong><span>教学班、名单与成绩录入</span></a>
+      <a class="portal-link" href="/registrar"><strong>教务端</strong><span>档案、学期与计费管理</span></a>
+    </nav>
+    <form id="loginForm" class="row">
       <label>用户名 <input id="username" autocomplete="username" required></label>
       <label>密码 <input id="password" type="password" autocomplete="current-password" required></label>
       <button>登录</button>
@@ -52,9 +58,9 @@
   for(const button of document.querySelectorAll('[data-tab]'))button.onclick=()=>showView(button.dataset.tab);
   function message(text,error=false){const el=$('message');el.textContent=text;el.className=error?'error':'';el.style.display='block'}
   function submitMessage(text=''){const el=$('submitError');el.textContent=text;el.hidden=!text}
-  async function api(path,options={}){const headers={'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})};const response=await fetch(path,{...options,headers});const data=await response.json();if(!response.ok)throw Error(typeof data.detail==='string'?data.detail:`请求失败（${response.status}）`);return data}
-  function loginState(){const ok=!!token;$('loginPanel').hidden=ok;$('main').hidden=!ok||mustChange;$('logout').hidden=!ok;$('changePasswordButton').hidden=!ok;$('passwordPanel').hidden=!ok||(!mustChange&&!passwordOpen);$('passwordHint').textContent=mustChange?'这是临时密码，首次登录必须修改后才能使用选课功能。':'请先输入当前密码，再设置新密码。'}
-  $('changePasswordButton').onclick=()=>{passwordOpen=!passwordOpen;loginState()};
+  async function api(path,options={}){const headers={'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})};let response;try{response=await fetch(path,{...options,headers})}catch{throw Error('无法连接服务器，请确认课程注册系统已在 8001 端口启动')}const data=await response.json();if(!response.ok)throw Error(typeof data.detail==='string'?data.detail:`请求失败（${response.status}）`);return data}
+  function loginState(){const ok=!!token;$('loginPanel').hidden=ok;$('main').hidden=!ok||mustChange;$('logout').hidden=!ok;$('changePasswordButton').hidden=!ok;$('passwordPanel').hidden=!ok||(!mustChange&&!passwordOpen);$('passwordHint').textContent=mustChange?'这是临时密码，首次登录必须修改后才能使用选课功能。':'请先输入当前密码，再设置新密码。';document.title=ok?'课程注册系统 · 学生端':'课程注册系统 · 登录入口';$('portalEyebrow').textContent=ok?'课程注册系统 · 学生端':'课程注册系统 · 统一入口';$('portalTitle').textContent=ok?'学生选课中心':'请选择登录身份';$('portalSubtitle').textContent=ok?'查询课程、规划志愿并跟踪学习记录':'学生、教师和教务员使用各自的工作台'}
+  $('changePasswordButton').onclick=()=>{passwordOpen=!passwordOpen;loginState();if(passwordOpen)requestAnimationFrame(()=>$('passwordPanel').scrollIntoView({behavior:'smooth',block:'start'}))};
   $('changePasswordForm').onsubmit=async e=>{e.preventDefault();if($('newPassword').value!==$('confirmPassword').value){message('两次输入的新密码不一致',true);return}try{await api('/api/auth/change-password',{method:'POST',body:JSON.stringify({current_password:$('currentPassword').value,new_password:$('newPassword').value})});$('changePasswordForm').reset();const firstLogin=mustChange;mustChange=false;passwordOpen=false;loginState();if(firstLogin)await load();message('密码已修改，请妥善保管新密码')}catch(error){message(error.message,true)}};
   async function resumeLogin(){const me=await api('/api/auth/me');if(me.role!=='STUDENT')throw Error('这里需要学生账号');mustChange=me.must_change_password;loginState();if(!mustChange)await load()}
   function offeringOptionLabel(o){const seats=Math.max(0,o.capacity-o.enrolled_count);return `${o.course_id} · ${o.title} · ${o.section_code} 班${o.status!=='OPEN'?'（已关闭）':seats===0?'（已满）':''}`}
@@ -70,7 +76,7 @@
   function syncSubmitState(){const dirty=choiceSignature(collect())!==savedChoiceSignature;$('submit').disabled=$('scheduleStatus').dataset.registrationOpen!=='true'||$('scheduleStatus').dataset.status!=='DRAFT'||dirty;if(dirty)message('选课已修改，请先保存草稿再提交')}
   async function checkAvailability(){const selected=collect();const ids=[...new Set(selected.map(c=>c.offering_id))];const box=$('availabilityAlert');const request=++availabilityRequest;if(!ids.length){box.hidden=true;return {primaryFull:[]}}const params=new URLSearchParams();for(const id of ids)params.append('offering_ids',id);const term=encodeURIComponent(activeTerm);const rows=await api(`/api/students/me/availability/${term}?${params}`);if(request!==availabilityRequest||term!==encodeURIComponent(activeTerm)||ids.join(',')!==[...new Set(collect().map(c=>c.offering_id))].join(','))return {primaryFull:[],stale:true};const byId=new Map(rows.map(r=>[r.offering_id,r]));for(const o of offerings){const live=byId.get(o.offering_id);if(live){o.enrolled_count=live.enrolled_count;o.status=live.status}}renderCatalog();refreshChoiceCounts();const unavailable=selected.filter(c=>byId.get(c.offering_id)?.is_full&&!reservedOfferings.has(c.offering_id));const primaryFull=unavailable.filter(c=>c.choice_type==='PRIMARY');if(unavailable.length){box.textContent=`名额更新：${unavailable.map(c=>`${c.choice_type==='PRIMARY'?'主选':'备选'} ${c.priority}（${c.offering_id}）`).join('、')} 已满或关闭。${primaryFull.length?'请调整主选后再提交。':'备选可能无法补位，建议更换。'}`;box.hidden=false}else box.hidden=true;return {primaryFull}}
   $('loginForm').addEventListener('submit',async e=>{e.preventDefault();try{const data=await api('/api/auth/login',{method:'POST',body:JSON.stringify({username:$('username').value,password:$('password').value})});$('password').value='';if(data.role==='PROFESSOR'){sessionStorage.setItem('professor_token',data.access_token);location.assign('/professor');return}if(data.role==='REGISTRAR'){sessionStorage.setItem('registrar_token',data.access_token);location.assign('/registrar');return}if(data.role!=='STUDENT')throw Error('未知账号角色');token=data.access_token;mustChange=data.must_change_password;sessionStorage.setItem('token',token);loginState();if(!mustChange)await load()}catch(error){message(error.message,true)}});
-  $('logout').onclick=()=>{token='';mustChange=false;passwordOpen=false;sessionStorage.removeItem('token');$('availabilityAlert').hidden=true;loginState();message('已退出登录')};
+  $('logout').onclick=()=>{token='';mustChange=false;passwordOpen=false;sessionStorage.removeItem('token');$('availabilityAlert').hidden=true;$('loginForm').reset();loginState();message('已退出登录，请重新选择身份登录');requestAnimationFrame(()=>$('loginPanel').scrollIntoView({behavior:'smooth',block:'start'}))};
   $('load').onclick=()=>load($('term').value).catch(e=>message(e.message,true));
   $('editSchedule').onclick=()=>showView('registration');
   $('loadGrades').onclick=()=>loadGrades().then(()=>message('成绩单已刷新')).catch(e=>message(e.message,true));
