@@ -33,13 +33,13 @@
       <div id="closePreview" hidden><h3 style="margin-top:24px">截止处理预览</h3><p id="previewSummary"></p><div id="previewDetails"></div><div class="row"><label>输入学期代码确认关闭 <input id="closeConfirm" autocomplete="off"></label><button id="closeTerm" disabled>正式关闭选课</button></div><p class="muted">关闭后账单将进入队列，由本地模拟计费接收端处理；真实财务系统尚未接入。</p></div>
     </section>
     <section class="card" data-view="billing"><span class="section-note">计费队列</span><h2>计费发送状态</h2><p class="muted">后台每 30 秒处理一次到期账单，失败会自动延时重试。默认连接本地模拟接收端；配置 HTTP 模式后可投递到真实计费接口。</p><div class="row"><label>学期 <select id="billingTerm"></select></label><button id="billingLoad" class="secondary">刷新状态</button><button id="billingDispatch">立即处理到期账单</button></div><p id="billingSummary" class="muted">请选择学期查看</p><div id="billingRows"></div></section>
-    <section class="card" data-view="students"><span class="section-note">学生档案</span><h2>学生档案</h2><p class="muted">新增时自动生成学号和登录账号，使用统一初始密码。SSN 仅可使用虚构演示号码；页面不回显号码。有课表或账号操作历史的档案不能删除，请改为停用。</p><form id="studentForm" class="fields">
+    <section class="card" data-view="students"><span class="section-note">学生档案</span><h2>学生档案</h2><p class="muted">新增时按顺序生成学号（如 S005）和同名小写登录账号（如 s005），使用统一初始密码。SSN 仅可使用虚构演示号码；页面不回显号码。有课表或账号操作历史的档案不能删除，请改为停用。</p><form id="studentForm" class="fields">
         <label>学号 <input id="studentId" placeholder="保存后由系统生成" disabled></label><label>姓名 <input id="studentName" maxlength="100" required></label>
         <label>出生日期 <input id="studentBirth" type="date" required></label><label>状态 <select id="studentStatus"><option value="ACTIVE">在读</option><option value="INACTIVE">停用</option><option value="GRADUATED">已毕业</option></select></label>
-        <label>毕业日期 <input id="studentGraduation" type="date" disabled></label><label>社会保障号 SSN<input id="studentSsn" inputmode="numeric" autocomplete="off" placeholder="留空则不修改；如 000-12-3456"></label>
+        <label>实际毕业日期（仅已毕业）<input id="studentGraduation" type="date" disabled><small id="graduationHint" class="muted">在读或停用状态无需填写；选择“已毕业”后可自行选择日期。</small></label><label>社会保障号 SSN<input id="studentSsn" inputmode="numeric" autocomplete="off" placeholder="留空则不修改；如 000-12-3456"></label>
         <div class="row" style="align-self:end"><button id="studentSave">新增学生</button><button type="button" id="studentCancel" class="secondary">清空</button></div>
       </form><h3 style="margin-top:24px">已有学生（最多显示 200 条）</h3><div class="row" style="margin-bottom:12px"><label>按学号或姓名搜索 <input id="studentSearch" maxlength="100"></label><button id="studentSearchButton" type="button" class="secondary">搜索学生</button></div><div id="students"></div></section>
-    <section class="card" data-view="professors"><span class="section-note">教师档案</span><h2>教师档案</h2><p class="muted">新增时自动生成教师编号和登录账号，使用统一初始密码。SSN 仅可使用虚构演示号码；页面不回显号码。有授课、成绩或账号操作历史的档案不能删除，请改为停用。</p><form id="professorForm" class="fields">
+    <section class="card" data-view="professors"><span class="section-note">教师档案</span><h2>教师档案</h2><p class="muted">新增时按顺序生成教师编号（如 P004）和同名小写登录账号（如 p004），使用统一初始密码。SSN 仅可使用虚构演示号码；页面不回显号码。有授课、成绩或账号操作历史的档案不能删除，请改为停用。</p><form id="professorForm" class="fields">
         <label>教师编号 <input id="professorId" placeholder="保存后由系统生成" disabled></label><label>姓名 <input id="professorName" maxlength="100" required></label>
         <label>出生日期 <input id="professorBirth" type="date" required></label><label>系别 <select id="professorDepartment" required></select></label>
         <label>状态 <select id="professorStatus"><option value="ACTIVE">在职</option><option value="INACTIVE">停用</option></select></label><label>社会保障号 SSN<input id="professorSsn" inputmode="numeric" autocomplete="off" placeholder="留空则不修改；如 000-12-3456"></label>
@@ -72,13 +72,13 @@
     }
     const billingTerm=$('billingTerm'),selectedBillingTerm=billingTerm.value;billingTerm.replaceChildren();for(const t of termRows)option(billingTerm,t.term_code,t.term_code);if(selectedBillingTerm)billingTerm.value=selectedBillingTerm;
     const studentTarget=$('students');studentTarget.replaceChildren();for(const s of studentRows){
-      const box=entry(`${s.student_id} · ${s.full_name}`,`${s.status} · 出生 ${s.date_of_birth} · ${s.has_account?'已有账号':'未绑定账号'} · SSN：${s.has_ssn?'已加密保存':'未填写'}${s.graduation_date?' · 毕业 '+s.graduation_date:''}`,()=>{
+      const box=entry(`${s.student_id} · ${s.full_name}`,`${s.status} · 出生 ${s.date_of_birth} · 登录名 ${s.username||'未绑定'} · SSN：${s.has_ssn?'已加密保存':'未填写'}${s.graduation_date?' · 实际毕业 '+s.graduation_date:''}`,()=>{
         editingStudent=s.student_id;$('studentId').value=s.student_id;$('studentName').value=s.full_name;$('studentBirth').value=s.date_of_birth;$('studentStatus').value=s.status;$('studentGraduation').value=s.graduation_date||'';$('studentGraduation').disabled=s.status!=='GRADUATED';$('studentSsn').value='';$('studentSave').textContent='保存修改';$('studentForm').scrollIntoView({behavior:'smooth'})
       });
       const remove=document.createElement('button');remove.className='secondary';remove.textContent='删除档案';remove.onclick=()=>deleteProfile('students',s.student_id,s.full_name);box.querySelector('.row').append(remove);studentTarget.append(box)
     }
     const professorTarget=$('professors');professorTarget.replaceChildren();for(const p of professorRows){
-      const box=entry(`${p.professor_id} · ${p.full_name}`,`${p.status} · ${p.department_id} 系 · ${p.has_account?'已有账号':'未绑定账号'} · SSN：${p.has_ssn?'已加密保存':'未填写'} · 任教资格：${p.qualifications.join('、')||'暂无'}`,()=>{
+      const box=entry(`${p.professor_id} · ${p.full_name}`,`${p.status} · ${p.department_id} 系 · 登录名 ${p.username||'未绑定'} · SSN：${p.has_ssn?'已加密保存':'未填写'} · 任教资格：${p.qualifications.join('、')||'暂无'}`,()=>{
         editingProfessor=p.professor_id;$('professorId').value=p.professor_id;$('professorName').value=p.full_name;$('professorBirth').value=p.date_of_birth;$('professorDepartment').value=p.department_id;$('professorStatus').value=p.status;$('professorSsn').value='';$('professorSave').textContent='保存修改';$('professorForm').scrollIntoView({behavior:'smooth'})
       });
       const remove=document.createElement('button');remove.className='secondary';remove.textContent='删除档案';remove.onclick=()=>deleteProfile('professors',p.professor_id,p.full_name);box.querySelector('.row').append(remove);

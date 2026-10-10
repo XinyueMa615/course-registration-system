@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from datetime import date
-import secrets
 
 from fastapi import HTTPException
 from pymysql.err import IntegrityError
@@ -45,9 +44,21 @@ def _graduation(status: str, graduation_date: date | None, birth_date: date) -> 
         raise HTTPException(400, "只有毕业状态才能填写毕业日期")
 
 
-def _new_id(prefix: str) -> str:
-    """随机编号由系统产生，数据库主键负责最终唯一性约束。"""
-    return prefix + secrets.token_hex(7).upper()
+def _next_person_id(cursor, table: str, column: str, prefix: str) -> str:
+    """生成易读的顺序编号；唯一约束和外层重试处理并发创建。"""
+    cursor.execute(
+        f"SELECT {column} FROM {table} WHERE {column} REGEXP %s "
+        f"ORDER BY CAST(SUBSTRING({column}, 2) AS UNSIGNED) DESC LIMIT 1 FOR UPDATE",
+        (f"^{prefix}[0-9]+$",),
+    )
+    row = cursor.fetchone()
+    number = int(row[column][1:]) + 1 if row else 1
+    while True:
+        person_id = f"{prefix}{number:03d}"
+        cursor.execute("SELECT 1 FROM user_account WHERE username=%s LIMIT 1", (person_id.lower(),))
+        if not cursor.fetchone():
+            return person_id
+        number += 1
 
 
 def _create_login(cursor, person_id: str, role: str) -> tuple[int, str, str]:
@@ -85,11 +96,12 @@ def students(query: str = "") -> list[dict]:
     pattern = f"%{query.strip()}%"
     with read_connection() as connection, connection.cursor() as cursor:
         cursor.execute(
-            "SELECT student_id,full_name,date_of_birth,status,graduation_date,"
-            "ssn_encrypted IS NOT NULL AS has_ssn,"
-            "user_id IS NOT NULL AS has_account FROM student_profile "
-            "WHERE (%s='' OR student_id LIKE %s OR full_name LIKE %s) "
-            "ORDER BY student_id LIMIT 200",
+            "SELECT s.student_id,s.full_name,s.date_of_birth,s.status,s.graduation_date,"
+            "s.ssn_encrypted IS NOT NULL AS has_ssn,"
+            "s.user_id IS NOT NULL AS has_account,u.username FROM student_profile s "
+            "LEFT JOIN user_account u ON u.user_id=s.user_id "
+            "WHERE (%s='' OR s.student_id LIKE %s OR s.full_name LIKE %s) "
+            "ORDER BY s.student_id LIMIT 200",
             (query.strip(), pattern, pattern),
         )
         return cursor.fetchall()
@@ -101,9 +113,9 @@ def create_student(user_id: int, body: StudentCreate) -> dict:
     _graduation(body.status, body.graduation_date, birth)
     encrypted = encrypt_ssn(body.ssn)
     for _ in range(3):
-        student_id = _new_id("S")
         try:
             with transaction() as connection, connection.cursor() as cursor:
+                student_id = _next_person_id(cursor, "student_profile", "student_id", "S")
                 account_id, username, temporary_password = _create_login(cursor, student_id, "STUDENT")
                 cursor.execute(
                     "INSERT INTO student_profile "
@@ -123,9 +135,10 @@ def create_student(user_id: int, body: StudentCreate) -> dict:
 def student(student_id: str) -> dict:
     with read_connection() as connection, connection.cursor() as cursor:
         cursor.execute(
-            "SELECT student_id,full_name,date_of_birth,status,graduation_date,"
-            "ssn_encrypted IS NOT NULL AS has_ssn,"
-            "user_id IS NOT NULL AS has_account FROM student_profile WHERE student_id=%s",
+            "SELECT s.student_id,s.full_name,s.date_of_birth,s.status,s.graduation_date,"
+            "s.ssn_encrypted IS NOT NULL AS has_ssn,"
+            "s.user_id IS NOT NULL AS has_account,u.username FROM student_profile s "
+            "LEFT JOIN user_account u ON u.user_id=s.user_id WHERE s.student_id=%s",
             (student_id,),
         )
         row = cursor.fetchone()
@@ -201,11 +214,12 @@ def professors(query: str = "") -> list[dict]:
     pattern = f"%{query.strip()}%"
     with read_connection() as connection, connection.cursor() as cursor:
         cursor.execute(
-            "SELECT professor_id,full_name,date_of_birth,department_id,status,"
-            "ssn_encrypted IS NOT NULL AS has_ssn,"
-            "user_id IS NOT NULL AS has_account FROM professor_profile "
-            "WHERE (%s='' OR professor_id LIKE %s OR full_name LIKE %s) "
-            "ORDER BY professor_id LIMIT 200",
+            "SELECT p.professor_id,p.full_name,p.date_of_birth,p.department_id,p.status,"
+            "p.ssn_encrypted IS NOT NULL AS has_ssn,"
+            "p.user_id IS NOT NULL AS has_account,u.username FROM professor_profile p "
+            "LEFT JOIN user_account u ON u.user_id=p.user_id "
+            "WHERE (%s='' OR p.professor_id LIKE %s OR p.full_name LIKE %s) "
+            "ORDER BY p.professor_id LIMIT 200",
             (query.strip(), pattern, pattern),
         )
         rows = cursor.fetchall()
@@ -228,9 +242,10 @@ def professors(query: str = "") -> list[dict]:
 def professor(professor_id: str) -> dict:
     with read_connection() as connection, connection.cursor() as cursor:
         cursor.execute(
-            "SELECT professor_id,full_name,date_of_birth,department_id,status,"
-            "ssn_encrypted IS NOT NULL AS has_ssn,"
-            "user_id IS NOT NULL AS has_account FROM professor_profile WHERE professor_id=%s",
+            "SELECT p.professor_id,p.full_name,p.date_of_birth,p.department_id,p.status,"
+            "p.ssn_encrypted IS NOT NULL AS has_ssn,"
+            "p.user_id IS NOT NULL AS has_account,u.username FROM professor_profile p "
+            "LEFT JOIN user_account u ON u.user_id=p.user_id WHERE p.professor_id=%s",
             (professor_id,),
         )
         row = cursor.fetchone()
@@ -250,9 +265,9 @@ def create_professor(user_id: int, body: ProfessorCreate) -> dict:
     birth = _birth_date(body.date_of_birth)
     encrypted = encrypt_ssn(body.ssn)
     for _ in range(3):
-        professor_id = _new_id("P")
         try:
             with transaction() as connection, connection.cursor() as cursor:
+                professor_id = _next_person_id(cursor, "professor_profile", "professor_id", "P")
                 _department_exists(cursor, body.department_id)
                 account_id, username, temporary_password = _create_login(cursor, professor_id, "PROFESSOR")
                 cursor.execute(

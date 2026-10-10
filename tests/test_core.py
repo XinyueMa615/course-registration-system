@@ -17,7 +17,7 @@ from app.catalog import availability_for_offerings, required_offerings
 from app.models import ProfessorCreate, ProfessorPatch, StudentCreate, StudentPatch
 from app.professors import claim_offering, release_offering, teacher_offerings
 from app.registrar import (
-    _graduation,
+    _graduation, _next_person_id,
     _create_login, add_qualification, create_professor, create_student, delete_professor, delete_student,
     professor, professors, remove_qualification, student, students, update_professor, update_student,
 )
@@ -62,6 +62,19 @@ class PureRulesTest(unittest.TestCase):
         self.assertEqual((account_id, username, password), (42, "sabc", "Testing@2026"))
         self.assertTrue(verify_password(password, cursor.params[1]))
         self.assertIn("must_change_password", cursor.query)
+
+    def test_person_ids_follow_readable_sequence(self):
+        class Cursor:
+            def execute(self, query, params):
+                self.row = {"student_id": "S004"} if query.startswith("SELECT student_id") else None
+
+            def fetchone(self):
+                return self.row
+
+        self.assertEqual(
+            _next_person_id(Cursor(), "student_profile", "student_id", "S"),
+            "S005",
+        )
 
     def test_submit_requires_exact_positions(self):
         with self.assertRaises(HTTPException):

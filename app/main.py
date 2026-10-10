@@ -71,6 +71,22 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="课程注册系统", version="0.5.0", lifespan=lifespan)
 
 
+def _account_identity(cursor, user: dict) -> dict:
+    cursor.execute(
+        "SELECT COALESCE(s.full_name,p.full_name,u.username) AS display_name,"
+        "s.student_id,p.professor_id FROM user_account u "
+        "LEFT JOIN student_profile s ON s.user_id=u.user_id "
+        "LEFT JOIN professor_profile p ON p.user_id=u.user_id "
+        "WHERE u.user_id=%s",
+        (user["user_id"],),
+    )
+    row = cursor.fetchone() or {}
+    return {
+        "display_name": row.get("display_name", user["username"]),
+        "person_id": row.get("student_id") or row.get("professor_id"),
+    }
+
+
 @app.get("/")
 def index():
     return FileResponse(ROOT / "web" / "index.html", headers={"Cache-Control": "no-store"})
@@ -152,24 +168,28 @@ def login(body: LoginRequest):
             (username,),
         )
         user = cursor.fetchone()
-    password_matches = verify_password(
-        body.password, user["password_hash"] if user else _DUMMY_PASSWORD_HASH
-    )
-    if not user or not user["is_active"] or not password_matches:
-        raise HTTPException(401, "账号或密码错误")
+        password_matches = verify_password(
+            body.password, user["password_hash"] if user else _DUMMY_PASSWORD_HASH
+        )
+        if not user or not user["is_active"] or not password_matches:
+            raise HTTPException(401, "账号或密码错误")
+        identity = _account_identity(cursor, user)
     return {
         "access_token": create_token(user["user_id"], user["role"]),
         "token_type": "bearer",
         "username": user["username"],
         "role": user["role"],
         "must_change_password": bool(user["must_change_password"]),
+        **identity,
     }
 
 
 @app.get("/api/auth/me")
 def auth_me(user: dict = Depends(current_user)):
+    with read_connection() as connection, connection.cursor() as cursor:
+        identity = _account_identity(cursor, user)
     return {"username": user["username"], "role": user["role"],
-            "must_change_password": bool(user["must_change_password"])}
+            "must_change_password": bool(user["must_change_password"]), **identity}
 
 
 @app.post("/api/auth/change-password")
