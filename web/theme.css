@@ -62,6 +62,12 @@ header::before {
   width: 31%;
   background: rgba(255, 255, 255, .035);
   transform: skewX(-14deg) translateX(18%);
+  pointer-events: none;
+}
+
+header > .row {
+  position: relative;
+  z-index: 1;
 }
 
 header h1 {
