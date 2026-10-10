@@ -57,6 +57,27 @@ def _ensure_states(cursor, term_code: str, offerings: dict[str, dict]) -> None:
             "VALUES (%s,%s,%s) ON DUPLICATE KEY UPDATE offering_id=offering_id",
             (offering_id, term_code, offering["capacity"]),
         )
+        cursor.execute(
+            "SELECT term_code,capacity,enrolled_count,status FROM offering_registration_state "
+            "WHERE offering_id=%s FOR UPDATE",
+            (offering_id,),
+        )
+        state = cursor.fetchone()
+        if not state or state["term_code"] != term_code:
+            raise HTTPException(409, f"教学班 {offering_id} 的本地名额状态异常")
+        if state["capacity"] != offering["capacity"]:
+            if state["status"] != "OPEN":
+                raise HTTPException(409, f"教学班 {offering_id} 已关闭，不能同步容量")
+            if state["enrolled_count"] > offering["capacity"]:
+                raise HTTPException(
+                    409,
+                    f"教学班 {offering_id} 的目录容量已降至 {offering['capacity']}，"
+                    f"但已有 {state['enrolled_count']} 人占用名额，请联系教务员处理",
+                )
+            cursor.execute(
+                "UPDATE offering_registration_state SET capacity=%s WHERE offering_id=%s",
+                (offering["capacity"], offering_id),
+            )
 
 
 def _release_enrollments(cursor, schedule_id: int) -> None:
@@ -247,13 +268,33 @@ def get_schedule(user_id: int, term_code: str) -> dict:
     with read_connection() as connection, connection.cursor() as cursor:
         student_id = student_id_for_user(cursor, user_id)
         cursor.execute(
+            "SELECT status,registration_opens_at,registration_closes_at "
+            "FROM academic_term WHERE term_code=%s",
+            (term_code,),
+        )
+        term = cursor.fetchone()
+        if not term:
+            raise HTTPException(404, "学期不存在")
+        now = datetime.now()
+        registration_open = (
+            term["status"] == "OPEN"
+            and term["registration_opens_at"] <= now <= term["registration_closes_at"]
+        )
+        context = {
+            "term_code": term_code,
+            "term_status": term["status"],
+            "registration_open": registration_open,
+            "registration_opens_at": term["registration_opens_at"],
+            "registration_closes_at": term["registration_closes_at"],
+        }
+        cursor.execute(
             "SELECT schedule_id,status,submitted_at,finalized_at FROM student_schedule "
             "WHERE student_id=%s AND term_code=%s",
             (student_id, term_code),
         )
         schedule = cursor.fetchone()
         if not schedule or schedule["status"] == "DELETED":
-            return {"term_code": term_code, "status": "EMPTY", "choices": []}
+            return {**context, "status": "EMPTY", "choices": []}
         cursor.execute(
             "SELECT c.choice_id,c.offering_id,c.choice_type,c.priority,c.status,e.status AS enrollment_status "
             "FROM schedule_choice c LEFT JOIN enrollment e ON e.choice_id=c.choice_id "
@@ -262,7 +303,7 @@ def get_schedule(user_id: int, term_code: str) -> dict:
         )
         choices = cursor.fetchall()
         return {
-            "term_code": term_code,
+            **context,
             "schedule_id": schedule["schedule_id"],
             "status": schedule["status"],
             "submitted_at": schedule["submitted_at"],

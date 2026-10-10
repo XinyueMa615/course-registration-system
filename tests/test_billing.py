@@ -4,10 +4,52 @@ from decimal import Decimal
 import json
 import os
 import unittest
+from unittest.mock import patch
 from uuid import uuid4
 
-from app.billing import MockBillingReceiver, billing_status, dispatch_due
+from app.billing import HTTPBillingReceiver, MockBillingReceiver, billing_status, dispatch_due
 from app.db import read_connection, transaction
+
+
+class HTTPBillingReceiverTest(unittest.TestCase):
+    class Response:
+        status = 201
+
+        def __init__(self, payload: bytes):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return self.payload
+
+    def test_http_receiver_sends_idempotency_key_and_detects_duplicate(self):
+        bill = {
+            "schedule_id": 7,
+            "idempotency_key": "registration:TEST:7",
+            "amount": Decimal("100.00"),
+            "final_schedule": json.dumps({"schedule_id": 7, "amount": "100.00"}),
+        }
+        receiver = HTTPBillingReceiver(
+            "https://billing.example.test/registrations", token="test-token", timeout_seconds=5
+        )
+        with patch("app.billing.urlopen", return_value=self.Response(b'{"duplicate": false}')) as send:
+            self.assertTrue(receiver.send(bill))
+        request = send.call_args.args[0]
+        self.assertEqual(request.get_header("Idempotency-key"), bill["idempotency_key"])
+        self.assertEqual(request.get_header("Authorization"), "Bearer test-token")
+        self.assertEqual(send.call_args.kwargs["timeout"], 5)
+
+        with patch("app.billing.urlopen", return_value=self.Response(b'{"duplicate": true}')):
+            self.assertFalse(receiver.send(bill))
+
+        changed = dict(bill, amount=Decimal("200.00"))
+        with self.assertRaises(ValueError):
+            receiver.send(changed)
 
 
 @unittest.skipUnless(os.getenv("RUN_DB_INTEGRATION") == "1", "需显式指定隔离测试库")

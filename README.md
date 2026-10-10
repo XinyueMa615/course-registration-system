@@ -86,7 +86,18 @@ cd course-registration-system
 
 旧版数据库缺少 `mock_billing_receipt` 表时，按“已有数据库升级”一节运行 `07_billing_mock.sql`。新装数据库的 `02_registration.sql` 已包含这张表。
 
-正式关闭选课会把每名学生的最终课表和金额放入 `billing_outbox`。应用启动后会每 30 秒自动处理到期账单；教务页面“模拟计费发送状态”也可查看每笔的待发送、等待重试、成功状态，或手动立即处理到期账单。计费端以 `idempotency_key` 为唯一键保存收件记录；如果它已接收账单但确认消息丢失，再次发送同一账单只返回旧收件记录，不会重复计费。失败按 30、60、120 秒等间隔重试，最多间隔 10 分钟；服务重启后仍继续处理。**这只是本地模拟计费系统，不向真实财务系统发数据。**
+正式关闭选课会把每名学生的最终课表和金额放入 `billing_outbox`。应用启动后会每 30 秒自动处理到期账单；教务页面“计费发送状态”也可查看每笔的待发送、等待重试、成功状态，或手动立即处理到期账单。计费端以 `idempotency_key` 为唯一键保存收件记录；如果它已接收账单但确认消息丢失，再次发送同一账单只返回旧收件记录，不会重复计费。失败按 30、60、120 秒等间隔重试，最多间隔 10 分钟；服务重启后仍继续处理。本地默认使用模拟计费系统，不向真实财务系统发送数据。
+
+如果以后取得真实计费系统的 HTTP 接口，可在 `.env` 中切换：
+
+```text
+BILLING_MODE=http
+BILLING_URL=https://billing.example.edu/api/registrations
+BILLING_TOKEN=由计费系统提供的访问令牌
+BILLING_TIMEOUT_SECONDS=10
+```
+
+系统会以 JSON `POST` 最终课表，并通过 `Idempotency-Key` 请求头发送稳定的幂等键。真实接收端必须按该键去重并返回 2xx；响应 JSON 可用 `{"duplicate": true}` 表示此前已经接收。接口地址、认证方式或响应协议不同的话，应在 `HTTPBillingReceiver` 中按对方正式文档调整后再联调。
 
 ## 测试与下一步
 
@@ -98,7 +109,31 @@ python3 -m unittest discover -s tests -v
 
 需要数据库的 6 项集成测试默认会显示 `skipped`，这是预期行为，**不等于它们已经通过**。这些测试会创建学生、课程、学期、账单等记录，部分还会关闭测试学期；不要在自己正在使用的 `course_registration_v2` / `course_catalog_demo` 上设置 `RUN_DB_INTEGRATION=1`。以后应先准备与当前数据隔离的专用 MySQL 测试实例，再在该实例运行这些测试。
 
-人工联测建议按“教务建档并生成账号 → 学生／教师用初始密码登录并改密 → 学生保存草稿、提交和删除课表 → 教师查看报名名单 → 教务预览截止和模拟计费 → 教学结束后教师录成绩、学生看成绩单”的顺序进行。最后三项应在隔离测试实例或合适的演示学期测试，**不要为了测试修改或提前关闭正在使用的 `2026FA`**。重点再检查越权访问、重复选课、满额、先修课与时间冲突。后续还需独立部署与性能验证；真实计费系统不在当前演示范围。
+人工联测建议按“教务建档并生成账号 → 学生／教师用初始密码登录并改密 → 学生保存草稿、提交和删除课表 → 教师查看报名名单 → 教务预览截止和模拟计费 → 教学结束后教师录成绩、学生看成绩单”的顺序进行。最后三项应在隔离测试实例或合适的演示学期测试，**不要为了测试修改或提前关闭正在使用的 `2026FA`**。重点再检查越权访问、重复选课、满额、先修课与时间冲突。后续还需独立部署与性能验证；真实计费系统在获得正式接口资料后使用 HTTP 适配器联调。
+
+项目提供了不依赖第三方工具的并发测试脚本。先启动服务，再通过环境变量提供测试账号，避免密码进入命令历史：
+
+```bash
+export LOAD_TEST_USERNAME=student1
+export LOAD_TEST_PASSWORD='本机测试密码'
+
+# 课程目录延迟冒烟测试
+python -m scripts.load_test \
+  --path '/api/catalog/offerings?term_code=2026FA' \
+  --concurrency 50 --requests 500 --max-response 10
+
+# 本地服务 500 并发测试
+python -m scripts.load_test \
+  --path '/api/catalog/offerings?term_code=2026FA' \
+  --concurrency 500 --requests 2000 --max-response 10
+
+# 2000 并发必须在专用压测机和隔离数据库执行
+python -m scripts.load_test \
+  --path '/api/catalog/offerings?term_code=2026FA' \
+  --concurrency 2000 --requests 4000 --max-p80 120 --max-response 120
+```
+
+脚本输出成功率、吞吐量、P50/P80/P95 和最大响应时间，不满足阈值时以非零状态退出。`/health/live` 只检查进程存活，`/health/ready`（以及兼容入口 `/health`）同时检查业务数据库、课程目录和计费配置。完整的 500/2000 并发结论必须在独立、接近部署环境的服务器上获得，本机小规模结果不能代替正式容量测试。
 
 `database/03_demo.sql` 仅用于本地演示，演示学期的选课时间截至 2026-10-15。过期后应配置新的演示学期和目录教学班，不应通过修改系统时间测试。
 

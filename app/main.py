@@ -2,14 +2,15 @@
 import asyncio
 from contextlib import asynccontextmanager
 import logging
+from time import perf_counter
 
 from fastapi import Depends, FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from .billing import billing_status, dispatch_due
-from .catalog import availability_for_offerings, offerings_for_term
+from .catalog import CATALOG, availability_for_offerings, offerings_for_term
 from .closing import close_registration, preview_close
-from .config import ROOT
+from .config import ROOT, settings
 from .db import read_connection, transaction
 from .grades import grade_offerings, report_card, roster, set_grade
 from .models import (
@@ -36,6 +37,7 @@ from .terms import complete_term, create_term, open_term, terms, update_term
 
 
 logger = logging.getLogger(__name__)
+_DUMMY_PASSWORD_HASH = hash_password("invalid-login-timing-placeholder")
 
 
 async def _billing_worker() -> None:
@@ -46,7 +48,7 @@ async def _billing_worker() -> None:
         except Exception as error:
             marker = (type(error).__name__, getattr(error, "status_code", None))
             if marker != last_error:
-                logger.warning("模拟计费投递暂不可用：%s", marker[0])
+                logger.warning("计费投递暂不可用：%s", marker[0])
             last_error = marker
         else:
             last_error = None
@@ -91,21 +93,64 @@ def registrar_page():
 
 @app.get("/health")
 def health():
-    with read_connection() as connection, connection.cursor() as cursor:
-        cursor.execute("SELECT 1 AS ok")
-        cursor.fetchone()
+    return readiness()
+
+
+@app.get("/health/live")
+def liveness():
     return {"status": "ok"}
+
+
+@app.get("/health/ready")
+def readiness():
+    started = perf_counter()
+    database = {"status": "error", "latency_ms": None}
+    catalog = {"status": "error", "latency_ms": None}
+    try:
+        with read_connection() as connection, connection.cursor() as cursor:
+            database_started = perf_counter()
+            cursor.execute("SELECT 1 AS ok")
+            cursor.fetchone()
+            database = {
+                "status": "ok",
+                "latency_ms": round((perf_counter() - database_started) * 1000, 2),
+            }
+            catalog_started = perf_counter()
+            cursor.execute(f"SELECT 1 AS ok FROM {CATALOG}.course LIMIT 1")
+            catalog_ok = cursor.fetchone() is not None
+            catalog = {
+                "status": "ok" if catalog_ok else "error",
+                "latency_ms": round((perf_counter() - catalog_started) * 1000, 2),
+            }
+    except Exception:
+        logger.exception("就绪检查失败")
+    billing_configured = settings.billing_mode == "mock" or (
+        settings.billing_mode == "http" and bool(settings.billing_url)
+    )
+    ready = database["status"] == "ok" and catalog["status"] == "ok" and billing_configured
+    payload = {
+        "status": "ok" if ready else "degraded",
+        "database": database,
+        "catalog": catalog,
+        "billing": {"mode": settings.billing_mode, "configured": billing_configured},
+        "total_latency_ms": round((perf_counter() - started) * 1000, 2),
+    }
+    return payload if ready else JSONResponse(payload, status_code=503)
 
 
 @app.post("/api/auth/login")
 def login(body: LoginRequest):
+    username = body.username.strip()
     with read_connection() as connection, connection.cursor() as cursor:
         cursor.execute(
             "SELECT user_id,username,password_hash,role,is_active,must_change_password FROM user_account WHERE username=%s",
-            (body.username,),
+            (username,),
         )
         user = cursor.fetchone()
-    if not user or not user["is_active"] or not verify_password(body.password, user["password_hash"]):
+    password_matches = verify_password(
+        body.password, user["password_hash"] if user else _DUMMY_PASSWORD_HASH
+    )
+    if not user or not user["is_active"] or not password_matches:
         raise HTTPException(401, "账号或密码错误")
     return {
         "access_token": create_token(user["user_id"], user["role"]),
@@ -134,6 +179,11 @@ def change_password(body: PasswordChange, user: dict = Depends(current_user)):
         cursor.execute(
             "UPDATE user_account SET password_hash=%s,must_change_password=FALSE WHERE user_id=%s",
             (hash_password(body.new_password), user["user_id"]),
+        )
+        cursor.execute(
+            "INSERT INTO audit_log (user_id,action,entity_type,entity_id) "
+            "VALUES (%s,'CHANGE_PASSWORD','USER',%s)",
+            (user["user_id"], str(user["user_id"])),
         )
     return {"changed": True}
 
@@ -223,8 +273,9 @@ def registrar_catalog(user: dict = Depends(require_role("REGISTRAR"))):
 
 
 @app.get("/api/registrar/students")
-def registrar_students(user: dict = Depends(require_role("REGISTRAR"))):
-    return students()
+def registrar_students(q: str = Query(default="", max_length=100),
+                       user: dict = Depends(require_role("REGISTRAR"))):
+    return students(q)
 
 
 @app.post("/api/registrar/students", status_code=201)
@@ -243,8 +294,9 @@ def registrar_delete_student(student_id: str, user: dict = Depends(require_role(
 
 
 @app.get("/api/registrar/professors")
-def registrar_professors(user: dict = Depends(require_role("REGISTRAR"))):
-    return professors()
+def registrar_professors(q: str = Query(default="", max_length=100),
+                         user: dict = Depends(require_role("REGISTRAR"))):
+    return professors(q)
 
 
 @app.post("/api/registrar/professors", status_code=201)

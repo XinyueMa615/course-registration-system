@@ -150,17 +150,24 @@ def _load_plan(cursor, term: dict) -> dict:
                 passed[row["student_id"]][row["course_id"]], GRADE_VALUE.get(row["letter_grade"], 0)
             )
 
-    # 第 2 步：无教师的班直接取消；低于 3 人的班暂留，等待第 3 步备选补位。
+    # 第 2 步：只有已有教师且当前至少 3 人的主选班先进入课表。
+    # 人数不足的班仍可在下一步作为备选被选择，但其原主选学生需要先补位。
     cancellations = {offering_id: "NO_PROFESSOR" for offering_id in offerings if offering_id not in taught}
     active = {}
     for schedule in schedules:
         schedule_id = schedule["schedule_id"]
         active[schedule_id] = {
             row["offering_id"] for row in choices[schedule_id]
-            if row["choice_type"] == "PRIMARY" and row["offering_id"] not in cancellations
+            if (row["choice_type"] == "PRIMARY"
+                and row["offering_id"] not in cancellations
+                and counts[row["offering_id"]] >= 3)
         }
-    for offering_id in cancellations:
-        counts[offering_id] = 0
+    # 后续容量判断和账单必须只统计当前真正进入课表的课程，不能继续计算
+    # 已经失效的主选占位记录。
+    counts = {offering_id: 0 for offering_id in offerings}
+    for current in active.values():
+        for offering_id in current:
+            counts[offering_id] += 1
 
     def available(candidate: str, current: set[str], student_id: str) -> bool:
         if candidate in cancellations or candidate not in taught or counts[candidate] >= offerings[candidate]["capacity"]:
@@ -293,7 +300,7 @@ def close_registration(user_id: int, term_code: str) -> dict:
             schedule_id = schedule["schedule_id"]
             for row in plan["choices"][schedule_id]:
                 if row["choice_type"] == "PRIMARY":
-                    survived = row["offering_id"] not in plan["cancellations"]
+                    survived = row["offering_id"] in plan["active"][schedule_id]
                     cursor.execute(
                         "UPDATE enrollment SET status=%s WHERE enrollment_id=%s",
                         ("COMMITTED" if survived else "CANCELLED", row["enrollment_id"]),

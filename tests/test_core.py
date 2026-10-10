@@ -4,6 +4,8 @@
 """
 import os
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
@@ -11,15 +13,16 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from app.models import ChoiceInput
-from app.catalog import availability_for_offerings
+from app.catalog import availability_for_offerings, required_offerings
 from app.models import ProfessorCreate, ProfessorPatch, StudentCreate, StudentPatch
 from app.professors import claim_offering, release_offering, teacher_offerings
 from app.registrar import (
+    _graduation,
     _create_login, add_qualification, create_professor, create_student, delete_professor, delete_student,
-    professor, remove_qualification, student, update_professor, update_student,
+    professor, professors, remove_qualification, student, students, update_professor, update_student,
 )
 from app.ssn import encrypt_ssn
-from app.schedules import _validate_positions, delete_schedule, get_schedule, save_draft, submit_schedule
+from app.schedules import _ensure_states, _validate_positions, delete_schedule, get_schedule, save_draft, submit_schedule
 from app.security import hash_password, require_role, verify_password
 
 
@@ -76,9 +79,177 @@ class PureRulesTest(unittest.TestCase):
         with self.assertRaises(HTTPException):
             availability_for_offerings("2026FA", [str(n) for n in range(7)])
 
+    def test_catalog_rejects_capacity_outside_course_rules(self):
+        class Cursor:
+            def execute(self, query, params):
+                pass
+
+            def fetchall(self):
+                return [{
+                    "offering_id": "BAD-CAPACITY", "course_id": "CS101",
+                    "term_code": "2026FA", "capacity": 11, "credits": 4,
+                }]
+
+        with self.assertRaises(HTTPException) as invalid:
+            required_offerings(Cursor(), "2026FA", ["BAD-CAPACITY"])
+        self.assertEqual(invalid.exception.status_code, 409)
+
+    def test_graduation_cannot_precede_birth(self):
+        with self.assertRaises(HTTPException) as invalid:
+            _graduation("GRADUATED", date(2000, 1, 1), date(2005, 1, 1))
+        self.assertIn("不能早于出生日期", str(invalid.exception.detail))
+
+    def test_catalog_capacity_changes_are_synchronized_safely(self):
+        class Cursor:
+            def __init__(self, capacity, enrolled_count=0, status="OPEN"):
+                self.state = {
+                    "term_code": "2026FA", "capacity": capacity,
+                    "enrolled_count": enrolled_count, "status": status,
+                }
+                self.updated_to = None
+
+            def execute(self, query, params):
+                if query.startswith("UPDATE offering_registration_state SET capacity"):
+                    self.updated_to = params[0]
+                    self.state["capacity"] = params[0]
+
+            def fetchone(self):
+                return self.state
+
+        cursor = Cursor(capacity=10, enrolled_count=7)
+        _ensure_states(cursor, "2026FA", {"OFFERING": {"capacity": 8}})
+        self.assertEqual(cursor.updated_to, 8)
+
+        cursor = Cursor(capacity=10, enrolled_count=9)
+        with self.assertRaises(HTTPException) as blocked:
+            _ensure_states(cursor, "2026FA", {"OFFERING": {"capacity": 8}})
+        self.assertEqual(blocked.exception.status_code, 409)
+        self.assertIn("已有 9 人", str(blocked.exception.detail))
+
 
 @unittest.skipUnless(os.getenv("RUN_DB_INTEGRATION") == "1", "需显式指定隔离测试库")
 class DatabaseFlowTest(unittest.TestCase):
+    def test_concurrent_last_seat_cannot_overbook(self):
+        from app.db import read_connection, transaction
+
+        suffix = uuid4().hex[:8]
+        term = "2026FA"
+        offering_ids = [
+            "2026FA-CS101-01", "2026FA-CS302-01", "2026FA-MA101-01", "2026FA-AR101-01",
+            "2026FA-CS201-01", "2026FA-AR102-01",
+        ]
+        choices = [
+            ChoiceInput(offering_id=offering_ids[0], choice_type="PRIMARY", priority=1),
+            ChoiceInput(offering_id=offering_ids[1], choice_type="PRIMARY", priority=2),
+            ChoiceInput(offering_id=offering_ids[2], choice_type="PRIMARY", priority=3),
+            ChoiceInput(offering_id=offering_ids[3], choice_type="PRIMARY", priority=4),
+            ChoiceInput(offering_id=offering_ids[4], choice_type="ALTERNATE", priority=1),
+            ChoiceInput(offering_id=offering_ids[5], choice_type="ALTERNATE", priority=2),
+        ]
+        user_ids = []
+        student_ids = []
+        with transaction() as connection, connection.cursor() as cursor:
+            for index in range(2):
+                cursor.execute(
+                    "INSERT INTO user_account (username,password_hash,role) VALUES (%s,%s,'STUDENT')",
+                    (f"race_{suffix}_{index}", hash_password("testing-password-123")),
+                )
+                user_ids.append(cursor.lastrowid)
+                student_id = f"RC{suffix}{index}"
+                student_ids.append(student_id)
+                cursor.execute(
+                    "INSERT INTO student_profile (student_id,user_id,full_name,date_of_birth) "
+                    "VALUES (%s,%s,'并发测试学生','2005-01-01')",
+                    (student_id, user_ids[-1]),
+                )
+        for user_id in user_ids:
+            save_draft(user_id, term, choices)
+
+        with transaction() as connection, connection.cursor() as cursor:
+            placeholders = ",".join(["%s"] * len(offering_ids))
+            cursor.execute(
+                f"SELECT offering_id,enrolled_count FROM offering_registration_state "
+                f"WHERE offering_id IN ({placeholders})",
+                tuple(offering_ids),
+            )
+            original_counts = {row["offering_id"]: row["enrolled_count"] for row in cursor.fetchall()}
+            cursor.execute(
+                "UPDATE offering_registration_state SET enrolled_count=capacity-1 "
+                "WHERE offering_id=%s",
+                (offering_ids[0],),
+            )
+
+        def attempt(user_id):
+            try:
+                submit_schedule(user_id, term)
+                return "SUCCESS"
+            except HTTPException as error:
+                return f"HTTP_{error.status_code}:{error.detail}"
+
+        try:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                results = list(executor.map(attempt, user_ids))
+            self.assertEqual(results.count("SUCCESS"), 1)
+            failures = [result for result in results if result != "SUCCESS"]
+            self.assertEqual(len(failures), 1)
+            self.assertTrue(failures[0].startswith("HTTP_409:"), failures[0])
+            with read_connection() as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT capacity,enrolled_count FROM offering_registration_state WHERE offering_id=%s",
+                    (offering_ids[0],),
+                )
+                state = cursor.fetchone()
+                self.assertEqual(state["enrolled_count"], state["capacity"])
+                cursor.execute(
+                    "SELECT status,COUNT(*) AS n FROM student_schedule "
+                    "WHERE student_id IN (%s,%s) GROUP BY status",
+                    tuple(student_ids),
+                )
+                self.assertEqual(
+                    {row["status"]: row["n"] for row in cursor.fetchall()},
+                    {"DRAFT": 1, "SUBMITTED": 1},
+                )
+        finally:
+            with transaction() as connection, connection.cursor() as cursor:
+                for offering_id, count in original_counts.items():
+                    cursor.execute(
+                        "UPDATE offering_registration_state SET enrolled_count=%s WHERE offering_id=%s",
+                        (count, offering_id),
+                    )
+                placeholders = ",".join(["%s"] * len(student_ids))
+                cursor.execute(
+                    f"SELECT schedule_id FROM student_schedule WHERE student_id IN ({placeholders})",
+                    tuple(student_ids),
+                )
+                schedule_ids = [row["schedule_id"] for row in cursor.fetchall()]
+                if schedule_ids:
+                    schedule_placeholders = ",".join(["%s"] * len(schedule_ids))
+                    cursor.execute(
+                        f"DELETE FROM enrollment WHERE schedule_id IN ({schedule_placeholders})",
+                        tuple(schedule_ids),
+                    )
+                    cursor.execute(
+                        f"DELETE FROM schedule_choice WHERE schedule_id IN ({schedule_placeholders})",
+                        tuple(schedule_ids),
+                    )
+                    cursor.execute(
+                        f"DELETE FROM student_schedule WHERE schedule_id IN ({schedule_placeholders})",
+                        tuple(schedule_ids),
+                    )
+                user_placeholders = ",".join(["%s"] * len(user_ids))
+                cursor.execute(
+                    f"DELETE FROM audit_log WHERE user_id IN ({user_placeholders})",
+                    tuple(user_ids),
+                )
+                cursor.execute(
+                    f"DELETE FROM student_profile WHERE student_id IN ({placeholders})",
+                    tuple(student_ids),
+                )
+                cursor.execute(
+                    f"DELETE FROM user_account WHERE user_id IN ({user_placeholders})",
+                    tuple(user_ids),
+                )
+
     def test_registrar_flow(self):
         from datetime import date
         from app.db import transaction
@@ -101,6 +272,8 @@ class DatabaseFlowTest(unittest.TestCase):
         self.assertTrue(created["has_account"])
         self.assertEqual(created["username"], student_id.lower())
         self.assertGreaterEqual(len(created["temporary_password"]), 10)
+        self.assertEqual([row["student_id"] for row in students(student_id)], [student_id])
+        self.assertIn(student_id, [row["student_id"] for row in students("测试学生")])
         with self.assertRaises(HTTPException):
             update_student(user_id, student_id, StudentPatch(status="GRADUATED"))
         updated = update_student(user_id, student_id, StudentPatch(
@@ -127,6 +300,7 @@ class DatabaseFlowTest(unittest.TestCase):
         self.assertEqual(created_professor["department_id"], "CS")
         self.assertTrue(created_professor["has_account"])
         self.assertEqual(created_professor["username"], professor_id.lower())
+        self.assertEqual([row["professor_id"] for row in professors(professor_id)], [professor_id])
         self.assertIn("CS101", add_qualification(user_id, professor_id, "CS101")["qualifications"])
         self.assertNotIn("CS101", remove_qualification(user_id, professor_id, "CS101")["qualifications"])
         self.assertEqual(update_professor(user_id, professor_id, ProfessorPatch(status="INACTIVE"))["status"], "INACTIVE")
@@ -225,6 +399,10 @@ class DatabaseFlowTest(unittest.TestCase):
 
         term = "2026FA"
         self.assertEqual(get_schedule(user_id, term)["status"], "EMPTY")
+        self.assertTrue(get_schedule(user_id, term)["registration_open"])
+        with self.assertRaises(HTTPException) as missing_term:
+            get_schedule(user_id, "NOTREAL")
+        self.assertEqual(missing_term.exception.status_code, 404)
         partial = [ChoiceInput(offering_id="2026FA-CS101-01", choice_type="PRIMARY", priority=1)]
         self.assertEqual(save_draft(user_id, term, partial)["status"], "DRAFT")
         with self.assertRaises(HTTPException):

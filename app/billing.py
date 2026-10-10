@@ -6,11 +6,27 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 import hashlib
 import json
-from typing import Optional
+from typing import Optional, Protocol
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from fastapi import HTTPException
 
+from .config import settings
 from .db import read_connection, transaction
+
+
+class BillingReceiver(Protocol):
+    def send(self, bill: dict) -> bool: ...
+
+
+def _validated_payload(bill: dict) -> tuple[dict, Decimal, str]:
+    payload = json.loads(bill["final_schedule"])
+    amount = Decimal(bill["amount"])
+    if payload.get("schedule_id") != bill["schedule_id"] or Decimal(payload.get("amount", "-1")) != amount:
+        raise ValueError("账单快照与待发送记录不一致")
+    canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return payload, amount, canonical
 
 
 class MockBillingReceiver:
@@ -22,11 +38,7 @@ class MockBillingReceiver:
         """返回 True 表示新接收，False 表示同一幂等键已接收过。"""
         if not self.available:
             raise ConnectionError("模拟计费系统不可用")
-        payload = json.loads(bill["final_schedule"])
-        amount = Decimal(bill["amount"])
-        if payload.get("schedule_id") != bill["schedule_id"] or Decimal(payload.get("amount", "-1")) != amount:
-            raise ValueError("账单快照与待发送记录不一致")
-        canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        _, amount, canonical = _validated_payload(bill)
         digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
         with transaction() as connection, connection.cursor() as cursor:
             cursor.execute(
@@ -50,6 +62,56 @@ class MockBillingReceiver:
             self.lose_ack_once = False
             raise ConnectionError("模拟网络故障：计费系统已接收，但确认消息丢失")
         return inserted
+
+
+class HTTPBillingReceiver:
+    """向真实计费 HTTP 接口投递账单；对方须按 Idempotency-Key 去重。"""
+
+    def __init__(self, url: str, *, token: str = "", timeout_seconds: float = 10):
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError("BILLING_URL 必须是有效的 http/https 地址")
+        if not 0 < timeout_seconds <= 120:
+            raise ValueError("BILLING_TIMEOUT_SECONDS 必须在 0–120 秒之间")
+        self.url = url
+        self.token = token
+        self.timeout_seconds = timeout_seconds
+
+    def send(self, bill: dict) -> bool:
+        _, _, canonical = _validated_payload(bill)
+        headers = {
+            "Content-Type": "application/json; charset=utf-8",
+            "Accept": "application/json",
+            "Idempotency-Key": bill["idempotency_key"],
+        }
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        request = Request(self.url, data=canonical.encode("utf-8"), headers=headers, method="POST")
+        with urlopen(request, timeout=self.timeout_seconds) as response:
+            if not 200 <= response.status < 300:
+                raise ConnectionError(f"计费接口返回 HTTP {response.status}")
+            raw = response.read()
+        if not raw:
+            return True
+        try:
+            result = json.loads(raw)
+        except (TypeError, ValueError):
+            return True
+        return not bool(result.get("duplicate", False))
+
+
+def configured_receiver() -> BillingReceiver:
+    if settings.billing_mode == "mock":
+        return MockBillingReceiver()
+    if settings.billing_mode == "http":
+        if not settings.billing_url:
+            raise RuntimeError("BILLING_MODE=http 时必须配置 BILLING_URL")
+        return HTTPBillingReceiver(
+            settings.billing_url,
+            token=settings.billing_token,
+            timeout_seconds=settings.billing_timeout_seconds,
+        )
+    raise RuntimeError("BILLING_MODE 只能是 mock 或 http")
 
 
 def _require_mock_table() -> None:
@@ -115,14 +177,15 @@ def _fail(bill: dict, error: Exception) -> bool:
 
 def dispatch_due(
     limit: int = 20,
-    receiver: Optional[MockBillingReceiver] = None,
+    receiver: Optional[BillingReceiver] = None,
     term_code: Optional[str] = None,
 ) -> dict:
     """处理到期记录；后台定时调用，也可由教务员手动触发。"""
     if not 1 <= limit <= 100:
         raise ValueError("limit 应为 1–100")
-    _require_mock_table()
-    receiver = receiver or MockBillingReceiver()
+    receiver = receiver or configured_receiver()
+    if isinstance(receiver, MockBillingReceiver):
+        _require_mock_table()
     summary = {"processed": 0, "succeeded": 0, "retry_scheduled": 0, "new_receipts": 0}
     for _ in range(limit):
         bill = _claim_due(term_code)
@@ -140,22 +203,33 @@ def dispatch_due(
 
 
 def billing_status(term_code: str) -> dict:
-    _require_mock_table()
+    if settings.billing_mode == "mock":
+        _require_mock_table()
     with read_connection() as connection, connection.cursor() as cursor:
         cursor.execute("SELECT status FROM academic_term WHERE term_code=%s", (term_code,))
         term = cursor.fetchone()
         if not term:
             raise HTTPException(404, "学期不存在")
+        receipt_join = (
+            "LEFT JOIN mock_billing_receipt r ON r.idempotency_key=b.idempotency_key "
+            if settings.billing_mode == "mock" else ""
+        )
+        received_column = "r.received_at" if settings.billing_mode == "mock" else "NULL AS received_at"
         cursor.execute(
             "SELECT b.billing_id,b.schedule_id,s.student_id,b.amount,b.status,b.attempts,"
-            "b.next_attempt_at,b.last_error,b.sent_at,r.received_at "
+            f"b.next_attempt_at,b.last_error,b.sent_at,{received_column} "
             "FROM billing_outbox b JOIN student_schedule s ON s.schedule_id=b.schedule_id "
-            "LEFT JOIN mock_billing_receipt r ON r.idempotency_key=b.idempotency_key "
-            "WHERE s.term_code=%s ORDER BY b.billing_id",
+            + receipt_join + "WHERE s.term_code=%s ORDER BY b.billing_id",
             (term_code,),
         )
         rows = cursor.fetchall()
     counts = {"PENDING": 0, "RETRYING": 0, "SUCCEEDED": 0}
     for row in rows:
         counts[row["status"]] += 1
-    return {"term_code": term_code, "term_status": term["status"], "counts": counts, "bills": rows}
+    return {
+        "term_code": term_code,
+        "term_status": term["status"],
+        "receiver_mode": settings.billing_mode,
+        "counts": counts,
+        "bills": rows,
+    }

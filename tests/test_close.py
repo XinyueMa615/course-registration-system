@@ -130,8 +130,8 @@ class CloseFlowTest(unittest.TestCase):
         self.assertEqual(reasons[offerings["AR101"]], "NO_PROFESSOR")
         self.assertEqual(reasons[offerings[custom_course]], "TOO_FEW_STUDENTS")
         self.assertEqual(next(r for r in before["committed_offerings"]
-                              if r["offering_id"] == offerings["AR102"])["students"], 3)
-        self.assertEqual(len(before["alternate_placements"]), 3)
+                              if r["offering_id"] == offerings["AR102"])["students"], 4)
+        self.assertEqual(len(before["alternate_placements"]), 4)
         with self.assertRaises(HTTPException) as failure:
             close_registration(registrar_id, term_code)
         self.assertEqual(failure.exception.status_code, 409)
@@ -171,7 +171,7 @@ class CloseFlowTest(unittest.TestCase):
             )
             states = {r["offering_id"]: r for r in cursor.fetchall()}
             self.assertEqual(states[offerings["AR102"]]["status"], "COMMITTED")
-            self.assertEqual(states[offerings["AR102"]]["enrolled_count"], 3)
+            self.assertEqual(states[offerings["AR102"]]["enrolled_count"], 4)
             self.assertEqual(states[unselected_offering]["status"], "CANCELLED")
             self.assertEqual(states[offerings["AR101"]]["cancellation_reason"], "NO_PROFESSOR")
             self.assertEqual(states[offerings[custom_course]]["cancellation_reason"], "TOO_FEW_STUDENTS")
@@ -189,9 +189,9 @@ class CloseFlowTest(unittest.TestCase):
             self.assertEqual(len(bills), 4)
             self.assertTrue(all(b["status"] == "PENDING" for b in bills))
             self.assertEqual(sorted(b["amount"] for b in bills),
-                             [Decimal("5500.00"), Decimal("6500.00"), Decimal("6500.00"), Decimal("6500.00")])
+                             [Decimal("6500.00")] * 4)
             self.assertEqual(sorted(len(json.loads(b["final_schedule"])["offerings"]) for b in bills),
-                             [3, 4, 4, 4])
+                             [4, 4, 4, 4])
             cursor.execute(
                 "SELECT e.status,COUNT(*) AS n FROM enrollment e "
                 "JOIN student_schedule s ON s.schedule_id=e.schedule_id "
@@ -199,4 +199,4 @@ class CloseFlowTest(unittest.TestCase):
                 (term_code,),
             )
             self.assertEqual({r["status"]: r["n"] for r in cursor.fetchall()},
-                             {"COMMITTED": 15, "CANCELLED": 4})
+                             {"COMMITTED": 16, "CANCELLED": 4})

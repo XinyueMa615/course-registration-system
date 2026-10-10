@@ -95,6 +95,15 @@ def required_offerings(cursor, term_code: str, offering_ids: list[str]) -> dict[
     offerings = {row["offering_id"]: row for row in cursor.fetchall()}
     if len(offerings) != len(offering_ids):
         raise HTTPException(status_code=400, detail="课表中有不存在或不属于当前学期的教学班")
+    invalid_capacity = [
+        row["offering_id"] for row in offerings.values()
+        if not 3 <= row["capacity"] <= 10
+    ]
+    if invalid_capacity:
+        raise HTTPException(
+            status_code=409,
+            detail=f"课程目录中的教学班容量必须为 3–10 人：{', '.join(sorted(invalid_capacity))}",
+        )
     if len({row["course_id"] for row in offerings.values()}) != len(offering_ids):
         raise HTTPException(status_code=400, detail="同一门课程不能同时选择多个教学班")
     return offerings

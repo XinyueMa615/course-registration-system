@@ -32,6 +32,10 @@ class Settings:
     catalog_db: str = os.getenv("CATALOG_DB", "course_catalog_demo")
     app_secret: str = os.getenv("APP_SECRET", "")
     initial_account_password: str = os.getenv("INITIAL_ACCOUNT_PASSWORD", "")
+    billing_mode: str = os.getenv("BILLING_MODE", "mock").strip().lower()
+    billing_url: str = os.getenv("BILLING_URL", "").strip()
+    billing_token: str = os.getenv("BILLING_TOKEN", "").strip()
+    billing_timeout_seconds: float = float(os.getenv("BILLING_TIMEOUT_SECONDS", "10"))
 
 
 settings = Settings()

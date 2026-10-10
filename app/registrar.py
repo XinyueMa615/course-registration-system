@@ -35,10 +35,12 @@ def _birth_date(value: date) -> date:
     return value
 
 
-def _graduation(status: str, graduation_date: date | None) -> None:
+def _graduation(status: str, graduation_date: date | None, birth_date: date) -> None:
     if status == "GRADUATED":
         if not graduation_date or graduation_date > date.today():
             raise HTTPException(400, "毕业状态需要填写不晚于今天的毕业日期")
+        if graduation_date < birth_date:
+            raise HTTPException(400, "毕业日期不能早于出生日期")
     elif graduation_date is not None:
         raise HTTPException(400, "只有毕业状态才能填写毕业日期")
 
@@ -79,12 +81,16 @@ def catalog_options() -> dict:
     return {"departments": departments, "courses": courses}
 
 
-def students() -> list[dict]:
+def students(query: str = "") -> list[dict]:
+    pattern = f"%{query.strip()}%"
     with read_connection() as connection, connection.cursor() as cursor:
         cursor.execute(
             "SELECT student_id,full_name,date_of_birth,status,graduation_date,"
             "ssn_encrypted IS NOT NULL AS has_ssn,"
-            "user_id IS NOT NULL AS has_account FROM student_profile ORDER BY student_id LIMIT 200"
+            "user_id IS NOT NULL AS has_account FROM student_profile "
+            "WHERE (%s='' OR student_id LIKE %s OR full_name LIKE %s) "
+            "ORDER BY student_id LIMIT 200",
+            (query.strip(), pattern, pattern),
         )
         return cursor.fetchall()
 
@@ -92,7 +98,7 @@ def students() -> list[dict]:
 def create_student(user_id: int, body: StudentCreate) -> dict:
     name = _name(body.full_name)
     birth = _birth_date(body.date_of_birth)
-    _graduation(body.status, body.graduation_date)
+    _graduation(body.status, body.graduation_date, birth)
     encrypted = encrypt_ssn(body.ssn)
     for _ in range(3):
         student_id = _new_id("S")
@@ -143,7 +149,8 @@ def update_student(user_id: int, student_id: str, body: StudentPatch) -> dict:
         updates["ssn_encrypted"] = encrypt_ssn(updates.pop("ssn"))
     with transaction() as connection, connection.cursor() as cursor:
         cursor.execute(
-            "SELECT status,graduation_date FROM student_profile WHERE student_id=%s FOR UPDATE",
+            "SELECT status,graduation_date,date_of_birth FROM student_profile "
+            "WHERE student_id=%s FOR UPDATE",
             (student_id,),
         )
         existing = cursor.fetchone()
@@ -151,7 +158,8 @@ def update_student(user_id: int, student_id: str, body: StudentPatch) -> dict:
             raise HTTPException(404, "学生不存在")
         final_status = updates.get("status", existing["status"])
         final_graduation = updates.get("graduation_date", existing["graduation_date"])
-        _graduation(final_status, final_graduation)
+        final_birth = updates.get("date_of_birth", existing["date_of_birth"])
+        _graduation(final_status, final_graduation, final_birth)
         if existing["status"] == "ACTIVE" and final_status != "ACTIVE":
             cursor.execute(
                 "SELECT 1 FROM student_schedule s JOIN academic_term t ON t.term_code=s.term_code "
@@ -189,18 +197,28 @@ def delete_student(user_id: int, student_id: str) -> dict:
     return {"deleted": True, "student_id": student_id}
 
 
-def professors() -> list[dict]:
+def professors(query: str = "") -> list[dict]:
+    pattern = f"%{query.strip()}%"
     with read_connection() as connection, connection.cursor() as cursor:
         cursor.execute(
             "SELECT professor_id,full_name,date_of_birth,department_id,status,"
             "ssn_encrypted IS NOT NULL AS has_ssn,"
-            "user_id IS NOT NULL AS has_account FROM professor_profile ORDER BY professor_id LIMIT 200"
+            "user_id IS NOT NULL AS has_account FROM professor_profile "
+            "WHERE (%s='' OR professor_id LIKE %s OR full_name LIKE %s) "
+            "ORDER BY professor_id LIMIT 200",
+            (query.strip(), pattern, pattern),
         )
         rows = cursor.fetchall()
-        cursor.execute(
-            "SELECT professor_id,course_id FROM professor_qualification ORDER BY professor_id,course_id"
-        )
-        qualifications = cursor.fetchall()
+        if rows:
+            placeholders = ",".join(["%s"] * len(rows))
+            cursor.execute(
+                f"SELECT professor_id,course_id FROM professor_qualification "
+                f"WHERE professor_id IN ({placeholders}) ORDER BY professor_id,course_id",
+                tuple(row["professor_id"] for row in rows),
+            )
+            qualifications = cursor.fetchall()
+        else:
+            qualifications = []
     by_professor: dict[str, list[str]] = {}
     for qualification in qualifications:
         by_professor.setdefault(qualification["professor_id"], []).append(qualification["course_id"])
