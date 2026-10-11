@@ -1,4 +1,6 @@
 """课程注册系统 API。"""
+from __future__ import annotations
+
 import asyncio
 from contextlib import asynccontextmanager
 import logging
