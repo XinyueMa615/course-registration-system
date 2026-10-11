@@ -5,6 +5,7 @@ import asyncio
 from contextlib import asynccontextmanager
 import logging
 from time import perf_counter
+from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
@@ -15,7 +16,7 @@ from .catalog import CATALOG, availability_for_offerings, offerings_for_term
 from .closing import close_registration, preview_close
 from .config import ROOT, settings
 from .db import read_connection, transaction
-from .grades import grade_offerings, report_card, roster, set_grade
+from .grades import grade_offerings, report_card, report_card_history, report_card_terms, roster, set_grade
 from .models import (
     GradeInput, LoginRequest, PasswordChange, ProfessorCreate, ProfessorPatch, ScheduleInput, StudentCreate, StudentPatch,
     TermCreate, TermPatch,
@@ -276,8 +277,18 @@ def student_availability(
 
 
 @app.get("/api/students/me/report-card")
-def student_report_card(user: dict = Depends(require_role("STUDENT"))):
-    return report_card(user["user_id"])
+def student_report_card(term_code: Optional[str] = None, user: dict = Depends(require_role("STUDENT"))):
+    return report_card(user["user_id"], term_code)
+
+
+@app.get("/api/students/me/report-card-terms")
+def student_report_card_terms(user: dict = Depends(require_role("STUDENT"))):
+    return report_card_terms(user["user_id"])
+
+
+@app.get("/api/students/me/report-card-history")
+def student_report_card_history(user: dict = Depends(require_role("STUDENT"))):
+    return report_card_history(user["user_id"])
 
 
 @app.get("/api/professors/me/offerings/{term_code}")

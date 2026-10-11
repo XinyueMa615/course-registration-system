@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS professor_profile (
 CREATE TABLE IF NOT EXISTS academic_term (
   term_code VARCHAR(8) PRIMARY KEY,
   year SMALLINT UNSIGNED NOT NULL,
-  semester ENUM('SPRING','SUMMER','FALL','WINTER') NOT NULL,
+  semester ENUM('SPRING','FALL') NOT NULL,
   registration_opens_at DATETIME NOT NULL,
   registration_closes_at DATETIME NOT NULL,
   status ENUM('DRAFT','OPEN','CLOSING','CLOSED') NOT NULL DEFAULT 'DRAFT',

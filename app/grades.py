@@ -119,13 +119,80 @@ def set_grade(user_id: int, term_code: str, offering_id: str, enrollment_id: int
     return {"enrollment_id": enrollment_id, "student_id": row["student_id"], "letter_grade": grade, "changed": True}
 
 
-def report_card(user_id: int) -> dict:
+def _completed_student_terms(cursor, student_id: str) -> list[dict]:
+    """从本人最早课表学期起，列出所有教学已完成的学期。"""
+    cursor.execute(
+        "SELECT t.term_code,t.year,t.semester FROM academic_term t "
+        "WHERE t.status='CLOSED' AND t.completed_at IS NOT NULL "
+        "AND EXISTS (SELECT 1 FROM student_schedule s "
+        "JOIN academic_term started ON started.term_code=s.term_code "
+        "WHERE s.student_id=%s AND (started.year<t.year OR "
+        "(started.year=t.year AND "
+        "FIELD(started.semester,'SPRING','SUMMER','FALL','WINTER') "
+        "<= FIELD(t.semester,'SPRING','SUMMER','FALL','WINTER')))) "
+        "ORDER BY t.year DESC,FIELD(t.semester,'SPRING','SUMMER','FALL','WINTER') DESC",
+        (student_id,),
+    )
+    return list(cursor.fetchall())
+
+
+def report_card_terms(user_id: int) -> list[dict]:
+    """列出该学生可查看成绩单的学期。"""
     with read_connection() as connection, connection.cursor() as cursor:
         cursor.execute("SELECT student_id FROM student_profile WHERE user_id=%s", (user_id,))
         student = cursor.fetchone()
         if not student:
             raise HTTPException(403, "账号尚未绑定学生档案")
-        term_code = _previous_completed_term(cursor)
+        return _completed_student_terms(cursor, student["student_id"])
+
+
+def report_card_history(user_id: int) -> dict:
+    """一次查询本人所有已完成学期成绩，按学期从新到旧分组。"""
+    with read_connection() as connection, connection.cursor() as cursor:
+        cursor.execute("SELECT student_id FROM student_profile WHERE user_id=%s", (user_id,))
+        student = cursor.fetchone()
+        if not student:
+            raise HTTPException(403, "账号尚未绑定学生档案")
+        terms = _completed_student_terms(cursor, student["student_id"])
+        cursor.execute(
+            f"SELECT v.term_code,t.year,t.semester,v.offering_id,o.course_id,c.title,"
+            f"c.credits,v.letter_grade,v.graded_at "
+            f"FROM v_report_card v JOIN academic_term t ON t.term_code=v.term_code "
+            f"JOIN {CATALOG}.course_offering o ON o.offering_id=v.offering_id "
+            f"JOIN {CATALOG}.course c ON c.course_id=o.course_id "
+            "WHERE v.student_id=%s AND t.status='CLOSED' AND t.completed_at IS NOT NULL "
+            "ORDER BY o.course_id,o.section_code",
+            (student["student_id"],),
+        )
+        rows = cursor.fetchall()
+    groups = [{"term_code": term["term_code"], "year": term["year"],
+               "semester": term["semester"], "courses": []} for term in terms]
+    by_code = {term["term_code"]: term for term in groups}
+    for row in rows:
+        group = by_code.get(row["term_code"])
+        if group is not None:
+            group["courses"].append({key: row[key] for key in (
+                "term_code", "offering_id", "course_id", "title", "credits", "letter_grade", "graded_at"
+            )})
+    return {"student_id": student["student_id"], "terms": groups}
+
+
+def report_card(user_id: int, term_code: str | None = None) -> dict:
+    with read_connection() as connection, connection.cursor() as cursor:
+        cursor.execute("SELECT student_id FROM student_profile WHERE user_id=%s", (user_id,))
+        student = cursor.fetchone()
+        if not student:
+            raise HTTPException(403, "账号尚未绑定学生档案")
+        if term_code:
+            cursor.execute(
+                "SELECT 1 FROM academic_term WHERE term_code=%s "
+                "AND status='CLOSED' AND completed_at IS NOT NULL",
+                (term_code,),
+            )
+            if not cursor.fetchone():
+                raise HTTPException(404, "该学期不存在或尚未完成，暂不能查看成绩单")
+        else:
+            term_code = _previous_completed_term(cursor)
         if not term_code:
             return {"student_id": student["student_id"], "term_code": None, "courses": []}
         cursor.execute(

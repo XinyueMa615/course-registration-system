@@ -305,8 +305,12 @@ button.danger:hover { background: #fff4f4; }
   gap: 12px;
 }
 
+.student-page #catalog,
+.student-page #choices,
 .registrar-page #students,
 .registrar-page #professors { grid-template-columns: minmax(0, 1fr); }
+
+.student-page #catalog .catalog-course { margin: 0; min-width: 0; }
 
 .student-page #catalog .offering,
 .student-page #choices .choice,

@@ -20,7 +20,8 @@ def terms() -> list[dict]:
     with read_connection() as connection, connection.cursor() as cursor:
         cursor.execute(
             "SELECT term_code,year,semester,registration_opens_at,registration_closes_at,"
-            "status,tuition_per_credit,closed_at,completed_at FROM academic_term ORDER BY year DESC,term_code DESC"
+            "status,tuition_per_credit,closed_at,completed_at FROM academic_term "
+            "ORDER BY year DESC,FIELD(semester,'SPRING','SUMMER','FALL','WINTER') DESC"
         )
         return cursor.fetchall()
 

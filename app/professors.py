@@ -123,7 +123,10 @@ def claim_offering(user_id: int, term_code: str, offering_id: str) -> dict:
         if state["status"] != "OPEN":
             raise HTTPException(409, "该教学班不再开放教师认领")
         cursor.execute(
-            "SELECT professor_id FROM teaching_assignment WHERE offering_id=%s",
+            # The state row above serializes claims for one offering. A locking read
+            # must also see the winner's committed assignment, not this transaction's
+            # earlier REPEATABLE READ snapshot from the qualification query.
+            "SELECT professor_id FROM teaching_assignment WHERE offering_id=%s FOR UPDATE",
             (offering_id,),
         )
         assignment = cursor.fetchone()

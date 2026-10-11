@@ -64,7 +64,7 @@ class ProfessorPatch(BaseModel):
 class TermCreate(BaseModel):
     term_code: str = Field(min_length=1, max_length=8, pattern=r"^[A-Za-z0-9_-]+$")
     year: int = Field(ge=2000, le=9999)
-    semester: Literal["SPRING", "SUMMER", "FALL", "WINTER"]
+    semester: Literal["SPRING", "FALL"]
     registration_opens_at: datetime
     registration_closes_at: datetime
     tuition_per_credit: Decimal = Field(default=Decimal("0"), ge=0, max_digits=10, decimal_places=2)
