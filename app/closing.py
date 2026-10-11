@@ -75,6 +75,12 @@ def _load_plan(cursor, term: dict) -> dict:
         (term_code,),
     )
     schedules = cursor.fetchall()
+    cursor.execute(
+        "SELECT schedule_id,student_id FROM student_schedule "
+        "WHERE term_code=%s AND status='DRAFT' ORDER BY schedule_id",
+        (term_code,),
+    )
+    draft_schedules = cursor.fetchall()
     schedule_ids = {row["schedule_id"] for row in schedules}
     cursor.execute(
         "SELECT c.choice_id,c.schedule_id,c.offering_id,c.choice_type,c.priority,c.status,"
@@ -234,6 +240,7 @@ def _load_plan(cursor, term: dict) -> dict:
         "counts": counts,
         "cancellations": cancellations,
         "schedules": schedules,
+        "draft_schedules": draft_schedules,
         "choices": choices,
         "selected_alternates": selected_alternates,
         "active": active,
@@ -247,6 +254,7 @@ def _public(plan: dict, term: dict) -> dict:
         "can_close": datetime.now() > term["registration_closes_at"],
         "registration_closes_at": term["registration_closes_at"],
         "submitted_schedules": len(plan["schedules"]),
+        "cancelled_draft_schedules": len(plan["draft_schedules"]),
         "cancelled_offerings": [
             {"offering_id": offering_id, "reason": reason}
             for offering_id, reason in sorted(plan["cancellations"].items())
@@ -334,6 +342,20 @@ def close_registration(user_id: int, term_code: str) -> dict:
                 )
             cursor.execute(
                 "UPDATE student_schedule SET status='FINALIZED',finalized_at=NOW() WHERE schedule_id=%s",
+                (schedule_id,),
+            )
+        # 仅保存而从未提交的草稿不参与注册和计费；截止后明确标记为取消，
+        # 避免它们永久停留在已经无法编辑的 DRAFT/SELECTED 状态。
+        for schedule in plan["draft_schedules"]:
+            schedule_id = schedule["schedule_id"]
+            cursor.execute(
+                "UPDATE schedule_choice SET status='CANCELLED' "
+                "WHERE schedule_id=%s AND status='SELECTED'",
+                (schedule_id,),
+            )
+            cursor.execute(
+                "UPDATE student_schedule SET status='CANCELLED',cancelled_at=NOW() "
+                "WHERE schedule_id=%s AND status='DRAFT'",
                 (schedule_id,),
             )
         for bill in plan["bills"]:

@@ -288,7 +288,7 @@ def get_schedule(user_id: int, term_code: str, *, require_existing: bool = False
             "registration_closes_at": term["registration_closes_at"],
         }
         cursor.execute(
-            "SELECT schedule_id,status,submitted_at,finalized_at FROM student_schedule "
+            "SELECT schedule_id,status,submitted_at,finalized_at,cancelled_at FROM student_schedule "
             "WHERE student_id=%s AND term_code=%s",
             (student_id, term_code),
         )
@@ -310,5 +310,6 @@ def get_schedule(user_id: int, term_code: str, *, require_existing: bool = False
             "status": schedule["status"],
             "submitted_at": schedule["submitted_at"],
             "finalized_at": schedule["finalized_at"],
+            "cancelled_at": schedule["cancelled_at"],
             "choices": choices,
         }

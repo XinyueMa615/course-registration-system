@@ -9,6 +9,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from app.closing import close_registration, preview_close
+from app.catalog import CATALOG
 from app.db import read_connection, transaction
 from app.models import TermCreate, TermPatch
 from app.terms import create_term, open_term, update_term
@@ -33,7 +34,7 @@ class CloseFlowTest(unittest.TestCase):
             )
             registrar_id = cursor.lastrowid
             cursor.execute(
-                "INSERT INTO course_catalog_demo.course (course_id,title,department_id,credits) "
+                f"INSERT INTO {CATALOG}.course (course_id,title,department_id,credits) "
                 "VALUES (%s,'补位测试课','ART',2)",
                 (custom_course,),
             )
@@ -48,13 +49,13 @@ class CloseFlowTest(unittest.TestCase):
             for index, course in enumerate(courses):
                 offering_id = offerings[course]
                 cursor.execute(
-                    "INSERT INTO course_catalog_demo.course_offering "
+                    f"INSERT INTO {CATALOG}.course_offering "
                     "(offering_id,course_id,term_code,section_code,capacity) "
                     "VALUES (%s,%s,%s,'01',10)",
                     (offering_id, course, term_code),
                 )
                 cursor.execute(
-                    "INSERT INTO course_catalog_demo.offering_meeting "
+                    f"INSERT INTO {CATALOG}.offering_meeting "
                     "(offering_id,weekday,start_period,end_period) VALUES (%s,%s,5,6)",
                     (offering_id, index + 1),
                 )
@@ -65,7 +66,7 @@ class CloseFlowTest(unittest.TestCase):
                 )
             # 未被选中的目录班没有业务状态行；正式关闭应补建并取消它。
             cursor.execute(
-                "INSERT INTO course_catalog_demo.course_offering "
+                f"INSERT INTO {CATALOG}.course_offering "
                 "(offering_id,course_id,term_code,section_code,capacity) "
                 "VALUES (%s,'CS101',%s,'02',10)",
                 (unselected_offering, term_code),
@@ -122,10 +123,28 @@ class CloseFlowTest(unittest.TestCase):
                     "UPDATE offering_registration_state SET enrolled_count=%s WHERE offering_id=%s",
                     (count, offerings[course]),
                 )
+            draft_student_id = f"DR{suffix}"
+            cursor.execute(
+                "INSERT INTO student_profile (student_id,full_name,date_of_birth) "
+                "VALUES (%s,'未提交草稿学生','2005-01-01')",
+                (draft_student_id,),
+            )
+            cursor.execute(
+                "INSERT INTO student_schedule (student_id,term_code,status) VALUES (%s,%s,'DRAFT')",
+                (draft_student_id, term_code),
+            )
+            draft_schedule_id = cursor.lastrowid
+            cursor.execute(
+                "INSERT INTO schedule_choice "
+                "(schedule_id,offering_id,term_code,choice_type,priority,status) "
+                "VALUES (%s,%s,%s,'PRIMARY',1,'SELECTED')",
+                (draft_schedule_id, offerings["CS101"], term_code),
+            )
 
         before = preview_close(term_code)
         self.assertFalse(before["can_close"])
         self.assertEqual(before["submitted_schedules"], 4)
+        self.assertEqual(before["cancelled_draft_schedules"], 1)
         reasons = {r["offering_id"]: r["reason"] for r in before["cancelled_offerings"]}
         self.assertEqual(reasons[offerings["AR101"]], "NO_PROFESSOR")
         self.assertEqual(reasons[offerings[custom_course]], "TOO_FEW_STUDENTS")
@@ -149,6 +168,10 @@ class CloseFlowTest(unittest.TestCase):
                 (offerings["AR102"],),
             )
             self.assertEqual(cursor.fetchone()["enrolled_count"], 0)
+            cursor.execute(
+                "SELECT status FROM student_schedule WHERE schedule_id=%s", (draft_schedule_id,)
+            )
+            self.assertEqual(cursor.fetchone()["status"], "DRAFT")
 
         # 只在隔离测试库中模拟截止时间已过，不改用户的真实演示学期。
         with transaction() as connection, connection.cursor() as cursor:
@@ -179,7 +202,20 @@ class CloseFlowTest(unittest.TestCase):
                 "SELECT status,COUNT(*) AS n FROM student_schedule WHERE term_code=%s GROUP BY status",
                 (term_code,),
             )
-            self.assertEqual(cursor.fetchall(), [{"status": "FINALIZED", "n": 4}])
+            self.assertEqual(
+                {row["status"]: row["n"] for row in cursor.fetchall()},
+                {"FINALIZED": 4, "CANCELLED": 1},
+            )
+            cursor.execute(
+                "SELECT s.status,s.cancelled_at,c.status AS choice_status "
+                "FROM student_schedule s JOIN schedule_choice c ON c.schedule_id=s.schedule_id "
+                "WHERE s.schedule_id=%s",
+                (draft_schedule_id,),
+            )
+            cancelled_draft = cursor.fetchone()
+            self.assertEqual(cancelled_draft["status"], "CANCELLED")
+            self.assertIsNotNone(cancelled_draft["cancelled_at"])
+            self.assertEqual(cancelled_draft["choice_status"], "CANCELLED")
             cursor.execute(
                 "SELECT b.status,b.amount,b.final_schedule FROM billing_outbox b "
                 "JOIN student_schedule s ON s.schedule_id=b.schedule_id WHERE s.term_code=%s",

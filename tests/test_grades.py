@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from app.db import read_connection, transaction
-from app.catalog import availability_for_offerings
+from app.catalog import CATALOG, availability_for_offerings
 from app.grades import grade_offerings, report_card, roster, set_grade
 from app.professors import current_roster
 from app.models import GradeInput
@@ -43,7 +43,7 @@ class GradeFlowTest(unittest.TestCase):
                  datetime.now() - timedelta(days=2), datetime.now() - timedelta(days=1)),
             )
             cursor.execute(
-                "INSERT INTO course_catalog_demo.course_offering "
+                f"INSERT INTO {CATALOG}.course_offering "
                 "(offering_id,course_id,term_code,section_code,capacity) VALUES (%s,'CS101',%s,'01',10)",
                 (offering_id, term_code),
             )

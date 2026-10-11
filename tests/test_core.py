@@ -13,7 +13,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from app.models import ChoiceInput
-from app.catalog import availability_for_offerings, required_offerings
+from app.catalog import CATALOG, availability_for_offerings, required_offerings
 from app.models import ProfessorCreate, ProfessorPatch, StudentCreate, StudentPatch
 from app.professors import claim_offering, release_offering, teacher_offerings
 from app.registrar import (
@@ -347,12 +347,12 @@ class DatabaseFlowTest(unittest.TestCase):
             )
             for index, offering_id in enumerate(offering_ids):
                 cursor.execute(
-                    "INSERT INTO course_catalog_demo.course_offering "
+                    f"INSERT INTO {CATALOG}.course_offering "
                     "(offering_id,course_id,term_code,section_code,capacity) VALUES (%s,'CS101','2026FA',%s,10)",
                     (offering_id, f"{suffix}{index}"),
                 )
                 cursor.execute(
-                    "INSERT INTO course_catalog_demo.offering_meeting "
+                    f"INSERT INTO {CATALOG}.offering_meeting "
                     "(offering_id,weekday,start_period,end_period) VALUES (%s,5,3,4)",
                     (offering_id,),
                 )
