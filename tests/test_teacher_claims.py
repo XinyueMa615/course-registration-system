@@ -28,8 +28,12 @@ class TeacherClaimIntegrationTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        if settings.db_name != "course_registration_v6_test" or settings.catalog_db != "course_catalog_v6_test":
-            raise RuntimeError("认领测试只允许连接第六版隔离测试库")
+        expected_db = os.getenv("INTEGRATION_DB_NAME")
+        expected_catalog = os.getenv("INTEGRATION_CATALOG_DB")
+        if (not expected_db or not expected_catalog
+                or settings.db_name != expected_db or settings.catalog_db != expected_catalog
+                or not expected_db.endswith("_autotest") or not expected_catalog.endswith("_autotest")):
+            raise RuntimeError("认领测试只允许连接显式指定的自动测试库")
         with read_connection() as connection, connection.cursor() as cursor:
             cursor.execute(
                 "SELECT status,registration_opens_at,registration_closes_at "

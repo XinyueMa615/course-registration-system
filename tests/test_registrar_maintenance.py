@@ -15,6 +15,7 @@ from app.registrar import (
     create_professor, create_student, delete_professor, delete_student,
     professor, professors, student, students, update_professor, update_student,
 )
+from app.schedules import get_schedule, schedule_terms
 from app.security import current_user, require_role
 
 
@@ -22,8 +23,9 @@ from app.security import current_user, require_role
 class RegistrarMaintenanceTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        if settings.db_name != "course_registration_v6_test":
-            raise RuntimeError("档案维护集成测试只能连接 course_registration_v6_test")
+        expected = os.getenv("INTEGRATION_DB_NAME")
+        if not expected or settings.db_name != expected or not expected.endswith("_autotest"):
+            raise RuntimeError("档案维护集成测试只能连接显式指定的自动测试库")
         with read_connection() as connection, connection.cursor() as cursor:
             cursor.execute("SELECT user_id FROM user_account WHERE username='registrar1' AND role='REGISTRAR'")
             row = cursor.fetchone()
@@ -35,6 +37,7 @@ class RegistrarMaintenanceTest(unittest.TestCase):
         marker = f"课设学生测试{uuid4().hex[:8]}"
         created = create_student(self.registrar_id, StudentCreate(
             full_name=marker, date_of_birth=date(2005, 1, 2),
+            department_id="CS", admission_term_code="2026FA",
             ssn="000-12-3456", status="ACTIVE",
         ))
         student_id = created["student_id"]
@@ -43,6 +46,8 @@ class RegistrarMaintenanceTest(unittest.TestCase):
             self.assertTrue(student_id.startswith("S"))
             self.assertEqual(created["username"], student_id.lower())
             self.assertTrue(created["has_ssn"])
+            self.assertEqual(created["department_id"], "CS")
+            self.assertEqual(created["admission_term_code"], "2026FA")
             self.assertEqual([row["student_id"] for row in students(marker)], [student_id])
             with read_connection() as connection, connection.cursor() as cursor:
                 cursor.execute(
@@ -55,16 +60,19 @@ class RegistrarMaintenanceTest(unittest.TestCase):
             self.assertEqual(row["role"], "STUDENT")
             self.assertTrue(row["must_change_password"])
             self.assertNotIn(b"000123456", row["ssn_encrypted"])
+            self.assertIn("2026FA", [term["term_code"] for term in schedule_terms(account_id)])
 
+            with self.assertRaises(HTTPException):
+                update_student(self.registrar_id, student_id, StudentPatch(ssn=None))
             updated = update_student(self.registrar_id, student_id, StudentPatch(
                 full_name=marker + "已修改", date_of_birth=date(2005, 2, 3),
-                status="GRADUATED", graduation_date=date(2026, 6, 1), ssn=None,
+                status="GRADUATED", graduation_date=date(2026, 6, 1),
             ))
             self.assertEqual(updated["full_name"], marker + "已修改")
             self.assertEqual(updated["date_of_birth"], date(2005, 2, 3))
             self.assertEqual(updated["status"], "GRADUATED")
             self.assertEqual(updated["graduation_date"], date(2026, 6, 1))
-            self.assertFalse(updated["has_ssn"])
+            self.assertTrue(updated["has_ssn"])
             self.assertEqual(student(student_id)["full_name"], marker + "已修改")
 
             missing_id = "S-NOT-FOUND-TEST"
@@ -112,15 +120,17 @@ class RegistrarMaintenanceTest(unittest.TestCase):
             self.assertTrue(row["must_change_password"])
             self.assertNotIn(b"000234567", row["ssn_encrypted"])
 
+            with self.assertRaises(HTTPException):
+                update_professor(self.registrar_id, professor_id, ProfessorPatch(ssn=None))
             updated = update_professor(self.registrar_id, professor_id, ProfessorPatch(
                 full_name=marker + "已修改", date_of_birth=date(1981, 2, 3),
-                status="INACTIVE", department_id="MATH", ssn=None,
+                status="INACTIVE", department_id="MATH",
             ))
             self.assertEqual(updated["full_name"], marker + "已修改")
             self.assertEqual(updated["date_of_birth"], date(1981, 2, 3))
             self.assertEqual(updated["status"], "INACTIVE")
             self.assertEqual(updated["department_id"], "MATH")
-            self.assertFalse(updated["has_ssn"])
+            self.assertTrue(updated["has_ssn"])
             self.assertEqual(professor(professor_id)["department_id"], "MATH")
 
             missing_id = "P-NOT-FOUND-TEST"
@@ -142,6 +152,42 @@ class RegistrarMaintenanceTest(unittest.TestCase):
         finally:
             if any(row["full_name"].startswith(marker) for row in professors(professor_id)):
                 delete_professor(self.registrar_id, professor_id)
+
+    def test_student_cannot_select_before_admission(self):
+        term_code = f"A{uuid4().hex[:7]}"
+        with read_connection() as connection, connection.cursor() as cursor:
+            cursor.execute("SELECT year FROM academic_term WHERE semester='FALL' AND year>=2027")
+            used_years = {row["year"] for row in cursor.fetchall()}
+        year = next(year for year in range(2027, 9999) if year not in used_years)
+        from app.db import transaction
+        with transaction() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO academic_term "
+                "(term_code,year,semester,registration_opens_at,registration_closes_at) "
+                "VALUES (%s,%s,'FALL','2027-08-01','2027-10-01')",
+                (term_code, year),
+            )
+        student_id = None
+        try:
+            created = create_student(self.registrar_id, StudentCreate(
+                full_name="入学边界测试", date_of_birth=date(2005, 1, 1),
+                department_id="CS", admission_term_code=term_code,
+                ssn="000-12-3456",
+            ))
+            student_id = created["student_id"]
+            with read_connection() as connection, connection.cursor() as cursor:
+                cursor.execute("SELECT user_id FROM student_profile WHERE student_id=%s", (student_id,))
+                student_user_id = cursor.fetchone()["user_id"]
+            with self.assertRaises(HTTPException) as error:
+                get_schedule(student_user_id, "2026FA", require_existing=False)
+            self.assertEqual(error.exception.status_code, 409)
+            self.assertIn("早于你的入学学期", error.exception.detail)
+            self.assertNotIn("2026FA", [term["term_code"] for term in schedule_terms(student_user_id)])
+        finally:
+            if student_id:
+                delete_student(self.registrar_id, student_id)
+            with transaction() as connection, connection.cursor() as cursor:
+                cursor.execute("DELETE FROM academic_term WHERE term_code=%s", (term_code,))
 
     def test_registrar_role_checks_and_login_requirement(self):
         with self.assertRaises(HTTPException) as unauthenticated:

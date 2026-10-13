@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from .catalog import CATALOG, meetings_for_offerings, required_offerings
 from .db import read_connection, transaction
 from .models import ChoiceInput
+from .student_terms import require_admitted_term, require_curriculum_choices, term_position
 
 
 def student_id_for_user(cursor, user_id: int) -> str:
@@ -50,7 +51,32 @@ def _validate_positions(choices: list[ChoiceInput], *, complete: bool) -> None:
         raise HTTPException(400, "提交时必须恰好选择 4 门主选和 2 门备选")
 
 
-def _ensure_states(cursor, term_code: str, offerings: dict[str, dict]) -> None:
+def _validate_choice_courses(choices: list[ChoiceInput], offerings: dict[str, dict]) -> None:
+    """同一课程可主选一个班、备选另一个班，但不能占同一组两个志愿。"""
+    seen = set()
+    for choice in choices:
+        key = (choice.choice_type, offerings[choice.offering_id]["course_id"])
+        if key in seen:
+            kind = "主选" if choice.choice_type == "PRIMARY" else "备选"
+            raise HTTPException(400, f"{kind}中同一门课程不能选择多个教学班")
+        seen.add(key)
+
+
+def _validate_choice_availability(cursor, term_code: str, choices: list[ChoiceInput], own_enrolled: set[str]) -> None:
+    for offering_id in sorted({choice.offering_id for choice in choices}):
+        cursor.execute(
+            "SELECT capacity,enrolled_count,status FROM offering_registration_state "
+            "WHERE offering_id=%s AND term_code=%s",
+            (offering_id, term_code),
+        )
+        state = cursor.fetchone()
+        if not state or state["status"] != "OPEN" or (
+            state["enrolled_count"] >= state["capacity"] and offering_id not in own_enrolled
+        ):
+            raise HTTPException(409, f"教学班 {offering_id} 已关闭或已满")
+
+
+def _ensure_states(cursor, term_code: str, offerings: dict[str, dict], *, sync_capacity: bool = True) -> None:
     for offering_id, offering in offerings.items():
         cursor.execute(
             "INSERT INTO offering_registration_state (offering_id,term_code,capacity) "
@@ -65,7 +91,7 @@ def _ensure_states(cursor, term_code: str, offerings: dict[str, dict]) -> None:
         state = cursor.fetchone()
         if not state or state["term_code"] != term_code:
             raise HTTPException(409, f"教学班 {offering_id} 的本地名额状态异常")
-        if state["capacity"] != offering["capacity"]:
+        if sync_capacity and state["capacity"] != offering["capacity"]:
             if state["status"] != "OPEN":
                 raise HTTPException(409, f"教学班 {offering_id} 已关闭，不能同步容量")
             if state["enrolled_count"] > offering["capacity"]:
@@ -102,8 +128,12 @@ def save_draft(user_id: int, term_code: str, choices: list[ChoiceInput]) -> dict
     with transaction() as connection, connection.cursor() as cursor:
         _open_term(cursor, term_code)
         student_id = student_id_for_user(cursor, user_id)
+        require_admitted_term(cursor, student_id, term_code)
         offerings = required_offerings(cursor, term_code, [c.offering_id for c in choices])
-        _ensure_states(cursor, term_code, offerings)
+        require_curriculum_choices(cursor, student_id, term_code, offerings)
+        # 草稿仅记录志愿，不占名额。先修课、满额和时间冲突留到提交时校验。
+        _ensure_states(cursor, term_code, offerings, sync_capacity=False)
+        _validate_choice_courses(choices, offerings)
         cursor.execute(
             "SELECT schedule_id,status FROM student_schedule WHERE student_id=%s AND term_code=%s FOR UPDATE",
             (student_id, term_code),
@@ -139,12 +169,18 @@ def save_draft(user_id: int, term_code: str, choices: list[ChoiceInput]) -> dict
     return get_schedule(user_id, term_code)
 
 
-def _validate_prerequisites(cursor, student_id: str, offerings: dict[str, dict], primary_ids: list[str]) -> None:
-    course_ids = [offerings[offering_id]["course_id"] for offering_id in primary_ids]
+def _validate_prerequisites(cursor, student_id: str, offerings: dict[str, dict], offering_ids: list[str]) -> None:
+    if not offering_ids:
+        return
+    course_ids = [offerings[offering_id]["course_id"] for offering_id in offering_ids]
     placeholders = ",".join(["%s"] * len(course_ids))
     cursor.execute(
-        f"SELECT course_id,prerequisite_course_id,minimum_grade FROM {CATALOG}.course_prerequisite "
-        f"WHERE course_id IN ({placeholders})",
+        f"SELECT p.course_id,c.title AS course_title,p.prerequisite_course_id,"
+        f"required.title AS prerequisite_title,p.minimum_grade "
+        f"FROM {CATALOG}.course_prerequisite p "
+        f"JOIN {CATALOG}.course c ON c.course_id=p.course_id "
+        f"JOIN {CATALOG}.course required ON required.course_id=p.prerequisite_course_id "
+        f"WHERE p.course_id IN ({placeholders})",
         tuple(course_ids),
     )
     requirements = cursor.fetchall()
@@ -163,7 +199,28 @@ def _validate_prerequisites(cursor, student_id: str, offerings: dict[str, dict],
         passed[row["course_id"]] = max(passed[row["course_id"]], grade_order.get(row["letter_grade"], 0))
     for requirement in requirements:
         if passed[requirement["prerequisite_course_id"]] < grade_order[requirement["minimum_grade"]]:
-            raise HTTPException(400, f"{requirement['course_id']} 尚未满足先修课 {requirement['prerequisite_course_id']}")
+            raise HTTPException(
+                400,
+                f"{requirement['course_title']}（{requirement['course_id']}）尚未满足先修课："
+                f"{requirement['prerequisite_title']}（{requirement['prerequisite_course_id']}），"
+                f"最低成绩要求 {requirement['minimum_grade']}",
+            )
+
+
+def check_prerequisite(user_id: int, term_code: str, offering_id: str) -> dict:
+    """只读预检查；正式提交仍须在事务内重新校验。"""
+    with read_connection() as connection, connection.cursor() as cursor:
+        student_id = student_id_for_user(cursor, user_id)
+        require_admitted_term(cursor, student_id, term_code)
+        offerings = required_offerings(cursor, term_code, [offering_id])
+        require_curriculum_choices(cursor, student_id, term_code, offerings)
+        try:
+            _validate_prerequisites(cursor, student_id, offerings, [offering_id])
+        except HTTPException as error:
+            if error.status_code != 400:
+                raise
+            return {"eligible": False, "message": error.detail}
+    return {"eligible": True, "message": ""}
 
 
 def _validate_conflicts(cursor, primary_ids: list[str]) -> None:
@@ -182,6 +239,7 @@ def submit_schedule(user_id: int, term_code: str) -> dict:
     with transaction() as connection, connection.cursor() as cursor:
         _open_term(cursor, term_code)
         student_id = student_id_for_user(cursor, user_id)
+        require_admitted_term(cursor, student_id, term_code)
         cursor.execute(
             "SELECT schedule_id,status FROM student_schedule WHERE student_id=%s AND term_code=%s FOR UPDATE",
             (student_id, term_code),
@@ -198,9 +256,14 @@ def submit_schedule(user_id: int, term_code: str) -> dict:
         choices = [ChoiceInput(**row) for row in rows]
         _validate_positions(choices, complete=True)
         offerings = required_offerings(cursor, term_code, [c.offering_id for c in choices])
+        require_curriculum_choices(cursor, student_id, term_code, offerings)
+        # 草稿保存不再同步容量；提交前按固定顺序锁定并同步最新目录容量。
+        _ensure_states(cursor, term_code, {key: offerings[key] for key in sorted(offerings)})
+        _validate_choice_courses(choices, offerings)
         primary_ids = [c.offering_id for c in choices if c.choice_type == "PRIMARY"]
-        _validate_prerequisites(cursor, student_id, offerings, primary_ids)
+        _validate_prerequisites(cursor, student_id, offerings, [c.offering_id for c in choices])
         _validate_conflicts(cursor, primary_ids)
+        _validate_choice_availability(cursor, term_code, choices, set())
         for offering_id in sorted(primary_ids):
             cursor.execute(
                 "SELECT capacity,enrolled_count,status FROM offering_registration_state "
@@ -237,6 +300,7 @@ def delete_schedule(user_id: int, term_code: str) -> dict:
     with transaction() as connection, connection.cursor() as cursor:
         _open_term(cursor, term_code)
         student_id = student_id_for_user(cursor, user_id)
+        require_admitted_term(cursor, student_id, term_code)
         cursor.execute(
             "SELECT schedule_id,status FROM student_schedule "
             "WHERE student_id=%s AND term_code=%s FOR UPDATE",
@@ -264,6 +328,42 @@ def delete_schedule(user_id: int, term_code: str) -> dict:
     return {"term_code": term_code, "status": "EMPTY", "choices": []}
 
 
+def schedule_terms(user_id: int) -> list[dict]:
+    """可查看课表的学期：从入学学期起，包含已开放的当前与历史学期。"""
+    with read_connection() as connection, connection.cursor() as cursor:
+        student_id = student_id_for_user(cursor, user_id)
+        cursor.execute(
+            "SELECT t.year,t.semester FROM student_profile p "
+            "LEFT JOIN academic_term t ON t.term_code=p.admission_term_code "
+            "WHERE p.student_id=%s", (student_id,),
+        )
+        admitted = cursor.fetchone()
+        boundary = admitted if admitted and admitted["year"] is not None else None
+        if boundary is None:
+            cursor.execute(
+                "SELECT t.year,t.semester FROM student_schedule s "
+                "JOIN academic_term t ON t.term_code=s.term_code "
+                "WHERE s.student_id=%s "
+                "ORDER BY t.year,FIELD(t.semester,'SPRING','SUMMER','FALL','WINTER') LIMIT 1",
+                (student_id,),
+            )
+            boundary = cursor.fetchone()
+        cursor.execute(
+            "SELECT t.term_code,t.year,t.semester,t.status,s.status AS schedule_status "
+            "FROM academic_term t LEFT JOIN student_schedule s "
+            "ON s.term_code=t.term_code AND s.student_id=%s "
+            "ORDER BY t.year DESC,FIELD(t.semester,'SPRING','SUMMER','FALL','WINTER') DESC",
+            (student_id,),
+        )
+        rows = cursor.fetchall()
+    if boundary:
+        start = term_position(boundary["year"], boundary["semester"])
+        return [row for row in rows if term_position(row["year"], row["semester"]) >= start
+                and (row["status"] != "DRAFT" or row["schedule_status"] is not None)]
+    # 迁移前未补录入学学期、也没有旧课表的账号，只显示开放学期，不推测入学年份。
+    return [row for row in rows if row["status"] == "OPEN"]
+
+
 def get_schedule(user_id: int, term_code: str, *, require_existing: bool = False) -> dict:
     with read_connection() as connection, connection.cursor() as cursor:
         student_id = student_id_for_user(cursor, user_id)
@@ -275,6 +375,7 @@ def get_schedule(user_id: int, term_code: str, *, require_existing: bool = False
         term = cursor.fetchone()
         if not term:
             raise HTTPException(404, "学期不存在")
+        require_admitted_term(cursor, student_id, term_code)
         now = datetime.now()
         registration_open = (
             term["status"] == "OPEN"

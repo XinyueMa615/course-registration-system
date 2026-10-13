@@ -12,16 +12,16 @@ from fastapi.responses import FileResponse, JSONResponse
 from pymysql.err import InterfaceError, OperationalError
 
 from .billing import billing_status, dispatch_due
-from .catalog import CATALOG, availability_for_offerings, offerings_for_term
+from .catalog import CATALOG, availability_for_offerings, offerings_for_term, student_offerings_for_term
 from .closing import close_registration, preview_close
 from .config import ROOT, settings
 from .db import read_connection, transaction
-from .grades import grade_offerings, report_card, report_card_history, report_card_terms, roster, set_grade
+from .grades import grade_offerings, grade_terms, report_card, report_card_history, report_card_terms, roster, set_grade
 from .models import (
     GradeInput, LoginRequest, PasswordChange, ProfessorCreate, ProfessorPatch, ScheduleInput, StudentCreate, StudentPatch,
     TermCreate, TermPatch,
 )
-from .professors import claim_offering, current_roster, release_offering, teacher_offerings
+from .professors import claim_offering, current_roster, release_offering, teacher_offerings, teacher_terms
 from .registrar import (
     add_qualification,
     catalog_options,
@@ -35,9 +35,10 @@ from .registrar import (
     update_professor,
     update_student,
 )
-from .schedules import delete_schedule, get_schedule, save_draft, submit_schedule
+from .schedules import check_prerequisite, delete_schedule, get_schedule, save_draft, schedule_terms, submit_schedule
 from .security import create_token, current_user, hash_password, require_role, revoke_session, verify_password
-from .terms import complete_term, create_term, open_term, terms, update_term
+from .student_terms import grade_label, grade_year
+from .terms import close_grade_entry, complete_term, create_term, open_term, terms, update_term
 
 
 logger = logging.getLogger(__name__)
@@ -85,16 +86,24 @@ async def database_unavailable(_request, error: OperationalError | InterfaceErro
 def _account_identity(cursor, user: dict) -> dict:
     cursor.execute(
         "SELECT COALESCE(s.full_name,p.full_name,u.username) AS display_name,"
-        "s.student_id,p.professor_id FROM user_account u "
+        "s.student_id,p.professor_id,s.department_id,s.admission_term_code,"
+        "t.year AS admission_year,t.semester AS admission_semester "
+        "FROM user_account u "
         "LEFT JOIN student_profile s ON s.user_id=u.user_id "
+        "LEFT JOIN academic_term t ON t.term_code=s.admission_term_code "
         "LEFT JOIN professor_profile p ON p.user_id=u.user_id "
         "WHERE u.user_id=%s",
         (user["user_id"],),
     )
     row = cursor.fetchone() or {}
+    student_grade = grade_year(row.get("admission_year"), row.get("admission_semester"))
     return {
         "display_name": row.get("display_name", user["username"]),
         "person_id": row.get("student_id") or row.get("professor_id"),
+        "department_id": row.get("department_id"),
+        "admission_term_code": row.get("admission_term_code"),
+        "grade_year": student_grade,
+        "grade_label": grade_label(student_grade) if row.get("student_id") else None,
     }
 
 
@@ -244,7 +253,19 @@ def change_password(body: PasswordChange, user: dict = Depends(current_user)):
 
 @app.get("/api/catalog/offerings")
 def catalog(term_code: str, user: dict = Depends(require_role("STUDENT", "PROFESSOR", "REGISTRAR"))):
+    if user["role"] == "STUDENT":
+        return student_offerings_for_term(user["user_id"], term_code)
     return offerings_for_term(term_code)
+
+
+@app.get("/api/students/me/schedule-terms")
+def student_schedule_terms(user: dict = Depends(require_role("STUDENT"))):
+    return schedule_terms(user["user_id"])
+
+
+@app.get("/api/students/me/prerequisites/{term_code}/{offering_id}")
+def student_prerequisite(term_code: str, offering_id: str, user: dict = Depends(require_role("STUDENT"))):
+    return check_prerequisite(user["user_id"], term_code, offering_id)
 
 
 @app.get("/api/students/me/schedules/{term_code}")
@@ -291,14 +312,24 @@ def student_report_card_history(user: dict = Depends(require_role("STUDENT"))):
     return report_card_history(user["user_id"])
 
 
+@app.get("/api/professors/me/terms")
+def professor_terms(user: dict = Depends(require_role("PROFESSOR"))):
+    return teacher_terms(user["user_id"])
+
+
 @app.get("/api/professors/me/offerings/{term_code}")
 def professor_offerings(term_code: str, user: dict = Depends(require_role("PROFESSOR"))):
     return teacher_offerings(user["user_id"], term_code)
 
 
 @app.get("/api/professors/me/grade-offerings")
-def professor_grade_offerings(user: dict = Depends(require_role("PROFESSOR"))):
-    return grade_offerings(user["user_id"])
+def professor_grade_offerings(term_code: Optional[str] = None, user: dict = Depends(require_role("PROFESSOR"))):
+    return grade_offerings(user["user_id"], term_code)
+
+
+@app.get("/api/professors/me/grade-terms")
+def professor_grade_terms(user: dict = Depends(require_role("PROFESSOR"))):
+    return grade_terms(user["user_id"])
 
 
 @app.post("/api/professors/me/offerings/{term_code}/{offering_id}")
@@ -411,6 +442,11 @@ def registrar_open_term(term_code: str, user: dict = Depends(require_role("REGIS
 @app.post("/api/registrar/terms/{term_code}/complete")
 def registrar_complete_term(term_code: str, user: dict = Depends(require_role("REGISTRAR"))):
     return complete_term(user["user_id"], term_code)
+
+
+@app.post("/api/registrar/terms/{term_code}/close-grade-entry")
+def registrar_close_grade_entry(term_code: str, user: dict = Depends(require_role("REGISTRAR"))):
+    return close_grade_entry(user["user_id"], term_code)
 
 
 @app.get("/api/registrar/terms/{term_code}/close-preview")

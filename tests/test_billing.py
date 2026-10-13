@@ -69,7 +69,7 @@ class BillingFlowTest(unittest.TestCase):
             cursor.execute(
                 "INSERT INTO academic_term "
                 "(term_code,year,semester,registration_opens_at,registration_closes_at,status) "
-                "VALUES (%s,%s,'WINTER',%s,%s,'CLOSED')",
+                "VALUES (%s,%s,'FALL',%s,%s,'CLOSED')",
                 (term_code, year, datetime.now() - timedelta(days=2),
                  datetime.now() - timedelta(days=1)),
             )

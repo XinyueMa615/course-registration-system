@@ -11,6 +11,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from app.models import ChoiceInput
 from app.catalog import CATALOG, availability_for_offerings, required_offerings
@@ -22,11 +23,25 @@ from app.registrar import (
     professor, professors, remove_qualification, student, students, update_professor, update_student,
 )
 from app.ssn import encrypt_ssn
-from app.schedules import _ensure_states, _validate_positions, delete_schedule, get_schedule, save_draft, submit_schedule
+from app.schedules import _ensure_states, _validate_choice_courses, _validate_positions, check_prerequisite, delete_schedule, get_schedule, save_draft, submit_schedule
 from app.security import hash_password, require_role, verify_password
 
 
 class PureRulesTest(unittest.TestCase):
+    def test_new_student_and_professor_require_ssn(self):
+        with self.assertRaises(ValidationError):
+            StudentCreate(full_name="测试学生", date_of_birth=date(2005, 1, 1),
+                          department_id="CS", admission_term_code="2026FA")
+        with self.assertRaises(ValidationError):
+            ProfessorCreate(full_name="测试教师", date_of_birth=date(1980, 1, 1),
+                            department_id="CS")
+        with self.assertRaises(HTTPException):
+            create_student(1, StudentCreate(full_name="测试学生", date_of_birth=date(2005, 1, 1),
+                                             department_id="CS", admission_term_code="2026FA", ssn=" "))
+        with self.assertRaises(HTTPException):
+            create_professor(1, ProfessorCreate(full_name="测试教师", date_of_birth=date(1980, 1, 1),
+                                                 department_id="CS", ssn=" "))
+
     def test_ssn_is_validated_and_encrypted(self):
         from types import SimpleNamespace
         from unittest.mock import patch
@@ -87,6 +102,21 @@ class PureRulesTest(unittest.TestCase):
         ]
         with self.assertRaises(HTTPException):
             _validate_positions(choices, complete=False)
+
+    def test_same_course_different_sections_allowed_across_choice_groups(self):
+        offerings = {
+            "CS201-02": {"course_id": "CS201"},
+            "CS201-03": {"course_id": "CS201"},
+        }
+        choices = [
+            ChoiceInput(offering_id="CS201-02", choice_type="PRIMARY", priority=1),
+            ChoiceInput(offering_id="CS201-03", choice_type="ALTERNATE", priority=1),
+        ]
+        _validate_positions(choices, complete=False)
+        _validate_choice_courses(choices, offerings)
+        choices[1] = ChoiceInput(offering_id="CS201-03", choice_type="PRIMARY", priority=2)
+        with self.assertRaises(HTTPException):
+            _validate_choice_courses(choices, offerings)
 
     def test_availability_query_limit(self):
         with self.assertRaises(HTTPException):
@@ -149,7 +179,7 @@ class DatabaseFlowTest(unittest.TestCase):
         term = "2026FA"
         offering_ids = [
             "2026FA-CS101-01", "2026FA-CS302-01", "2026FA-MA101-01", "2026FA-AR101-01",
-            "2026FA-CS201-01", "2026FA-AR102-01",
+            "2026FA-CS101-02", "2026FA-AR102-01",
         ]
         choices = [
             ChoiceInput(offering_id=offering_ids[0], choice_type="PRIMARY", priority=1),
@@ -276,7 +306,8 @@ class DatabaseFlowTest(unittest.TestCase):
             user_id = cursor.lastrowid
 
         created = create_student(user_id, StudentCreate(
-            full_name="  测试学生  ", date_of_birth=date(2005, 1, 1), ssn="000-12-3456",
+            full_name="  测试学生  ", date_of_birth=date(2005, 1, 1),
+            department_id="CS", admission_term_code="2026FA", ssn="000-12-3456",
         ))
         student_id = created["student_id"]
         self.assertTrue(student_id.startswith("S"))
@@ -289,11 +320,13 @@ class DatabaseFlowTest(unittest.TestCase):
         self.assertIn(student_id, [row["student_id"] for row in students("测试学生")])
         with self.assertRaises(HTTPException):
             update_student(user_id, student_id, StudentPatch(status="GRADUATED"))
+        with self.assertRaises(HTTPException):
+            update_student(user_id, student_id, StudentPatch(ssn=None))
         updated = update_student(user_id, student_id, StudentPatch(
-            status="GRADUATED", graduation_date=date(2026, 6, 1), ssn=None,
+            status="GRADUATED", graduation_date=date(2026, 6, 1),
         ))
         self.assertEqual(updated["status"], "GRADUATED")
-        self.assertFalse(updated["has_ssn"])
+        self.assertTrue(updated["has_ssn"])
         self.assertEqual(student(student_id)["graduation_date"], date(2026, 6, 1))
         self.assertTrue(delete_student(user_id, student_id)["deleted"])
         with self.assertRaises(HTTPException):
@@ -302,11 +335,11 @@ class DatabaseFlowTest(unittest.TestCase):
         with self.assertRaises(HTTPException):
             create_professor(user_id, ProfessorCreate(
                 full_name="测试教师", date_of_birth=date(1980, 1, 1),
-                department_id="NOT_A_DEPARTMENT",
+                department_id="NOT_A_DEPARTMENT", ssn="000-23-4567",
             ))
         created_professor = create_professor(user_id, ProfessorCreate(
             full_name="测试教师", date_of_birth=date(1980, 1, 1),
-            department_id="CS",
+            department_id="CS", ssn="000-23-4567",
         ))
         professor_id = created_professor["professor_id"]
         self.assertTrue(professor_id.startswith("P"))
@@ -413,6 +446,12 @@ class DatabaseFlowTest(unittest.TestCase):
         term = "2026FA"
         self.assertEqual(get_schedule(user_id, term)["status"], "EMPTY")
         self.assertTrue(get_schedule(user_id, term)["registration_open"])
+        self.assertTrue(check_prerequisite(user_id, term, "2026FA-CS101-01")["eligible"])
+        preview = check_prerequisite(user_id, term, "2026FA-CS201-01")
+        self.assertFalse(preview["eligible"])
+        self.assertIn("先修课", preview["message"])
+        self.assertIn("CS101", preview["message"])
+        self.assertEqual(get_schedule(user_id, term)["status"], "EMPTY")
         with self.assertRaises(HTTPException) as missing_term:
             get_schedule(user_id, "NOTREAL")
         self.assertEqual(missing_term.exception.status_code, 404)
@@ -426,7 +465,7 @@ class DatabaseFlowTest(unittest.TestCase):
             ChoiceInput(offering_id="2026FA-CS302-01", choice_type="PRIMARY", priority=2),
             ChoiceInput(offering_id="2026FA-MA101-01", choice_type="PRIMARY", priority=3),
             ChoiceInput(offering_id="2026FA-AR101-01", choice_type="PRIMARY", priority=4),
-            ChoiceInput(offering_id="2026FA-CS201-01", choice_type="ALTERNATE", priority=1),
+            ChoiceInput(offering_id="2026FA-CS101-02", choice_type="ALTERNATE", priority=1),
             ChoiceInput(offering_id="2026FA-AR102-01", choice_type="ALTERNATE", priority=2),
         ]
         self.assertEqual(save_draft(user_id, term, choices)["status"], "DRAFT")
@@ -453,11 +492,13 @@ class DatabaseFlowTest(unittest.TestCase):
 
         choices[0] = ChoiceInput(offering_id="2026FA-CS201-01", choice_type="PRIMARY", priority=1)
         choices[4] = ChoiceInput(offering_id="2026FA-CS101-01", choice_type="ALTERNATE", priority=1)
-        save_draft(user_id, term, choices)
+        self.assertEqual(save_draft(user_id, term, choices)["status"], "DRAFT")
         with self.assertRaises(HTTPException) as failure:
             submit_schedule(user_id, term)
         self.assertIn("先修课", str(failure.exception.detail))
+        self.assertEqual(get_schedule(user_id, term)["status"], "DRAFT")
 
+        choices[0] = ChoiceInput(offering_id="2026FA-CS101-01", choice_type="PRIMARY", priority=1)
         self.assertEqual(save_draft(user_id, term, choices[:1])["status"], "DRAFT")
         self.assertEqual(delete_schedule(user_id, term)["status"], "EMPTY")
         self.assertEqual(get_schedule(user_id, term)["choices"], [])
@@ -470,7 +511,7 @@ class DatabaseFlowTest(unittest.TestCase):
             ChoiceInput(offering_id="2026FA-CS302-01", choice_type="PRIMARY", priority=2),
             ChoiceInput(offering_id="2026FA-MA101-01", choice_type="PRIMARY", priority=3),
             ChoiceInput(offering_id="2026FA-AR101-01", choice_type="PRIMARY", priority=4),
-            ChoiceInput(offering_id="2026FA-CS201-01", choice_type="ALTERNATE", priority=1),
+            ChoiceInput(offering_id="2026FA-CS101-02", choice_type="ALTERNATE", priority=1),
             ChoiceInput(offering_id="2026FA-AR102-01", choice_type="ALTERNATE", priority=2),
         ])["status"], "DRAFT")
         self.assertEqual(submit_schedule(user_id, term)["status"], "SUBMITTED")

@@ -30,9 +30,12 @@ CREATE TABLE IF NOT EXISTS student_profile (
   user_id BIGINT UNSIGNED NULL UNIQUE,
   full_name VARCHAR(100) NOT NULL,
   date_of_birth DATE NOT NULL,
-  ssn_encrypted VARBINARY(512) NULL COMMENT '预留加密 SSN；演示可留空，不得保存明文或真实号码',
+  ssn_encrypted VARBINARY(512) NULL COMMENT '兼容旧档案；新建必须填虚构 SSN，加密存储',
   status ENUM('ACTIVE','INACTIVE','GRADUATED') NOT NULL DEFAULT 'ACTIVE',
   graduation_date DATE NULL,
+  department_id VARCHAR(20) NULL COMMENT '引用只读目录库 department_id；旧档案可待教务补录',
+  admission_term_code VARCHAR(8) NULL COMMENT '学生入学学期；旧档案不从首次课表猜测',
+  KEY idx_student_admission_term (admission_term_code),
   CONSTRAINT fk_v2_student_user FOREIGN KEY (user_id) REFERENCES user_account(user_id)
 ) ENGINE=InnoDB;
 
@@ -41,7 +44,7 @@ CREATE TABLE IF NOT EXISTS professor_profile (
   user_id BIGINT UNSIGNED NULL UNIQUE,
   full_name VARCHAR(100) NOT NULL,
   date_of_birth DATE NOT NULL,
-  ssn_encrypted VARBINARY(512) NULL COMMENT '预留加密 SSN；演示可留空，不得保存明文或真实号码',
+  ssn_encrypted VARBINARY(512) NULL COMMENT '兼容旧档案；新建必须填虚构 SSN，加密存储',
   status ENUM('ACTIVE','INACTIVE') NOT NULL DEFAULT 'ACTIVE',
   department_id VARCHAR(20) NOT NULL COMMENT '引用只读目录库 department_id，由业务服务核对',
   CONSTRAINT fk_v2_professor_user FOREIGN KEY (user_id) REFERENCES user_account(user_id)
@@ -57,12 +60,17 @@ CREATE TABLE IF NOT EXISTS academic_term (
   tuition_per_credit DECIMAL(10,2) NOT NULL DEFAULT 0 COMMENT '演示计费配置；题目未规定费率',
   closed_at DATETIME NULL,
   completed_at DATETIME NULL COMMENT '教务确认教学结束的时间；与选课关闭时间不同',
+  grade_entry_closed_at DATETIME NULL COMMENT '教务关闭本学期教师录分的时间；关闭后名单和成绩仍可查看',
   closed_by BIGINT UNSIGNED NULL,
   UNIQUE KEY uq_v2_term_year_semester (year, semester),
   CONSTRAINT fk_v2_term_closer FOREIGN KEY (closed_by) REFERENCES user_account(user_id),
   CONSTRAINT chk_v2_term_dates CHECK (registration_closes_at > registration_opens_at),
   CONSTRAINT chk_v2_term_tuition CHECK (tuition_per_credit >= 0)
 ) ENGINE=InnoDB;
+
+ALTER TABLE student_profile
+  ADD CONSTRAINT fk_student_admission_term FOREIGN KEY (admission_term_code)
+    REFERENCES academic_term(term_code);
 
 -- 外部目录的教学班 ID 在此仅作引用，不跨库建立外键。
 -- 服务首次读取目录时复制 capacity，并在选课事务中锁住本行。

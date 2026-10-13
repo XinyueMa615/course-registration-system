@@ -20,7 +20,7 @@ def terms() -> list[dict]:
     with read_connection() as connection, connection.cursor() as cursor:
         cursor.execute(
             "SELECT term_code,year,semester,registration_opens_at,registration_closes_at,"
-            "status,tuition_per_credit,closed_at,completed_at FROM academic_term "
+            "status,tuition_per_credit,closed_at,completed_at,grade_entry_closed_at FROM academic_term "
             "ORDER BY year DESC,FIELD(semester,'SPRING','SUMMER','FALL','WINTER') DESC"
         )
         return cursor.fetchall()
@@ -30,7 +30,7 @@ def term(term_code: str) -> dict:
     with read_connection() as connection, connection.cursor() as cursor:
         cursor.execute(
             "SELECT term_code,year,semester,registration_opens_at,registration_closes_at,"
-            "status,tuition_per_credit,closed_at,completed_at FROM academic_term WHERE term_code=%s",
+            "status,tuition_per_credit,closed_at,completed_at,grade_entry_closed_at FROM academic_term WHERE term_code=%s",
             (term_code,),
         )
         row = cursor.fetchone()
@@ -144,5 +144,29 @@ def complete_term(user_id: int, term_code: str) -> dict:
             "INSERT INTO audit_log (user_id,action,entity_type,entity_id) "
             "VALUES (%s,'COMPLETE_TERM','TERM',%s)",
             (user_id, term_code),
+        )
+    return term(term_code)
+
+
+def close_grade_entry(user_id: int, term_code: str) -> dict:
+    """教务关闭指定已完成学期的录分；历史名单和成绩仍保留只读。"""
+    with transaction() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT status,completed_at,grade_entry_closed_at FROM academic_term "
+            "WHERE term_code=%s FOR UPDATE", (term_code,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(404, "学期不存在")
+        if row["status"] != "CLOSED" or row["completed_at"] is None:
+            raise HTTPException(409, "只能关闭已完成学期的录分")
+        if row["grade_entry_closed_at"] is not None:
+            raise HTTPException(409, "该学期录分已经关闭")
+        cursor.execute(
+            "UPDATE academic_term SET grade_entry_closed_at=NOW() WHERE term_code=%s", (term_code,),
+        )
+        cursor.execute(
+            "INSERT INTO audit_log (user_id,action,entity_type,entity_id) "
+            "VALUES (%s,'CLOSE_GRADE_ENTRY','TERM',%s)", (user_id, term_code),
         )
     return term(term_code)

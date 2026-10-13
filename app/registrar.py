@@ -12,6 +12,7 @@ from .db import read_connection, transaction
 from .models import ProfessorCreate, ProfessorPatch, StudentCreate, StudentPatch
 from .security import hash_password
 from .ssn import encrypt_ssn
+from .student_terms import grade_label, grade_year, term_position
 
 
 def _audit(cursor, user_id: int, action: str, entity_type: str, entity_id: str) -> None:
@@ -81,6 +82,34 @@ def _department_exists(cursor, department_id: str) -> None:
         raise HTTPException(400, "系别不存在于课程目录")
 
 
+def _student_admission(cursor, student_id: str | None, term_code: str) -> None:
+    cursor.execute(
+        "SELECT year,semester FROM academic_term WHERE term_code=%s", (term_code,)
+    )
+    term = cursor.fetchone()
+    if not term:
+        raise HTTPException(400, "入学学期不存在，请先在学期管理中建立")
+    if student_id is None:
+        return
+    cursor.execute(
+        "SELECT t.year,t.semester FROM student_schedule s "
+        "JOIN academic_term t ON t.term_code=s.term_code "
+        "WHERE s.student_id=%s ORDER BY t.year,"
+        "FIELD(t.semester,'SPRING','SUMMER','FALL','WINTER') LIMIT 1",
+        (student_id,),
+    )
+    first_schedule = cursor.fetchone()
+    if first_schedule and term_position(term["year"], term["semester"]) > term_position(
+        first_schedule["year"], first_schedule["semester"]
+    ):
+        raise HTTPException(409, "入学学期不能晚于已有的最早课表学期")
+
+
+def _student_row(row: dict) -> dict:
+    year = grade_year(row.pop("admission_year"), row.pop("admission_semester"))
+    return {**row, "grade_year": year, "grade_label": grade_label(year)}
+
+
 def catalog_options() -> dict:
     with read_connection() as connection, connection.cursor() as cursor:
         cursor.execute(f"SELECT department_id,name FROM {CATALOG}.department ORDER BY department_id")
@@ -97,14 +126,17 @@ def students(query: str = "") -> list[dict]:
     with read_connection() as connection, connection.cursor() as cursor:
         cursor.execute(
             "SELECT s.student_id,s.full_name,s.date_of_birth,s.status,s.graduation_date,"
+            "s.department_id,s.admission_term_code,t.year AS admission_year,"
+            "t.semester AS admission_semester,"
             "s.ssn_encrypted IS NOT NULL AS has_ssn,"
             "s.user_id IS NOT NULL AS has_account,u.username FROM student_profile s "
             "LEFT JOIN user_account u ON u.user_id=s.user_id "
+            "LEFT JOIN academic_term t ON t.term_code=s.admission_term_code "
             "WHERE (%s='' OR s.student_id LIKE %s OR s.full_name LIKE %s) "
             "ORDER BY s.student_id LIMIT 200",
             (query.strip(), pattern, pattern),
         )
-        return cursor.fetchall()
+        return [_student_row(row) for row in cursor.fetchall()]
 
 
 def create_student(user_id: int, body: StudentCreate) -> dict:
@@ -112,16 +144,22 @@ def create_student(user_id: int, body: StudentCreate) -> dict:
     birth = _birth_date(body.date_of_birth)
     _graduation(body.status, body.graduation_date, birth)
     encrypted = encrypt_ssn(body.ssn)
+    if encrypted is None:
+        raise HTTPException(400, "社会保障号 SSN 不能为空")
     for _ in range(3):
         try:
             with transaction() as connection, connection.cursor() as cursor:
                 student_id = _next_person_id(cursor, "student_profile", "student_id", "S")
+                _department_exists(cursor, body.department_id)
+                _student_admission(cursor, None, body.admission_term_code)
                 account_id, username, temporary_password = _create_login(cursor, student_id, "STUDENT")
                 cursor.execute(
                     "INSERT INTO student_profile "
-                    "(student_id,user_id,full_name,date_of_birth,ssn_encrypted,status,graduation_date) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                    (student_id, account_id, name, birth, encrypted, body.status, body.graduation_date),
+                    "(student_id,user_id,full_name,date_of_birth,ssn_encrypted,status,graduation_date,"
+                    "department_id,admission_term_code) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (student_id, account_id, name, birth, encrypted, body.status,
+                     body.graduation_date, body.department_id, body.admission_term_code),
                 )
                 _audit(cursor, user_id, "CREATE_STUDENT", "STUDENT", student_id)
         except IntegrityError as error:
@@ -136,22 +174,26 @@ def student(student_id: str) -> dict:
     with read_connection() as connection, connection.cursor() as cursor:
         cursor.execute(
             "SELECT s.student_id,s.full_name,s.date_of_birth,s.status,s.graduation_date,"
+            "s.department_id,s.admission_term_code,t.year AS admission_year,"
+            "t.semester AS admission_semester,"
             "s.ssn_encrypted IS NOT NULL AS has_ssn,"
             "s.user_id IS NOT NULL AS has_account,u.username FROM student_profile s "
-            "LEFT JOIN user_account u ON u.user_id=s.user_id WHERE s.student_id=%s",
+            "LEFT JOIN user_account u ON u.user_id=s.user_id "
+            "LEFT JOIN academic_term t ON t.term_code=s.admission_term_code "
+            "WHERE s.student_id=%s",
             (student_id,),
         )
         row = cursor.fetchone()
     if not row:
         raise HTTPException(404, "学生不存在")
-    return row
+    return _student_row(row)
 
 
 def update_student(user_id: int, student_id: str, body: StudentPatch) -> dict:
     updates = body.model_dump(exclude_unset=True)
     if not updates:
         raise HTTPException(400, "没有需要修改的字段")
-    for required in ("full_name", "date_of_birth", "status"):
+    for required in ("full_name", "date_of_birth", "status", "department_id", "admission_term_code"):
         if required in updates and updates[required] is None:
             raise HTTPException(400, f"{required} 不能为空")
     if "full_name" in updates:
@@ -160,15 +202,23 @@ def update_student(user_id: int, student_id: str, body: StudentPatch) -> dict:
         updates["date_of_birth"] = _birth_date(updates["date_of_birth"])
     if "ssn" in updates:
         updates["ssn_encrypted"] = encrypt_ssn(updates.pop("ssn"))
+        if updates["ssn_encrypted"] is None:
+            raise HTTPException(400, "社会保障号 SSN 不能为空")
     with transaction() as connection, connection.cursor() as cursor:
         cursor.execute(
-            "SELECT status,graduation_date,date_of_birth FROM student_profile "
+            "SELECT status,graduation_date,date_of_birth,ssn_encrypted FROM student_profile "
             "WHERE student_id=%s FOR UPDATE",
             (student_id,),
         )
         existing = cursor.fetchone()
         if not existing:
             raise HTTPException(404, "学生不存在")
+        if existing["ssn_encrypted"] is None and "ssn_encrypted" not in updates:
+            raise HTTPException(400, "请先补录社会保障号 SSN")
+        if "department_id" in updates:
+            _department_exists(cursor, updates["department_id"])
+        if "admission_term_code" in updates:
+            _student_admission(cursor, student_id, updates["admission_term_code"])
         final_status = updates.get("status", existing["status"])
         final_graduation = updates.get("graduation_date", existing["graduation_date"])
         final_birth = updates.get("date_of_birth", existing["date_of_birth"])
@@ -265,6 +315,8 @@ def create_professor(user_id: int, body: ProfessorCreate) -> dict:
     name = _name(body.full_name)
     birth = _birth_date(body.date_of_birth)
     encrypted = encrypt_ssn(body.ssn)
+    if encrypted is None:
+        raise HTTPException(400, "社会保障号 SSN 不能为空")
     for _ in range(3):
         try:
             with transaction() as connection, connection.cursor() as cursor:
@@ -298,14 +350,18 @@ def update_professor(user_id: int, professor_id: str, body: ProfessorPatch) -> d
         updates["date_of_birth"] = _birth_date(updates["date_of_birth"])
     if "ssn" in updates:
         updates["ssn_encrypted"] = encrypt_ssn(updates.pop("ssn"))
+        if updates["ssn_encrypted"] is None:
+            raise HTTPException(400, "社会保障号 SSN 不能为空")
     with transaction() as connection, connection.cursor() as cursor:
         cursor.execute(
-            "SELECT status FROM professor_profile WHERE professor_id=%s FOR UPDATE",
+            "SELECT status,ssn_encrypted FROM professor_profile WHERE professor_id=%s FOR UPDATE",
             (professor_id,),
         )
         existing = cursor.fetchone()
         if not existing:
             raise HTTPException(404, "教师不存在")
+        if existing["ssn_encrypted"] is None and "ssn_encrypted" not in updates:
+            raise HTTPException(400, "请先补录社会保障号 SSN")
         if "department_id" in updates:
             _department_exists(cursor, updates["department_id"])
         if existing["status"] == "ACTIVE" and updates.get("status") == "INACTIVE":

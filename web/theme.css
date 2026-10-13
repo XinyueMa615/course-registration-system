@@ -226,6 +226,10 @@ main > [data-view] { grid-column: 2; }
 .toolbar select { min-width: 210px; }
 
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.professor-page .professor-term-controls { align-items: flex-end; }
+.professor-page .professor-term-controls button { min-height: 42px; }
+.professor-page .professor-grade-controls { align-items: flex-end; margin: 12px 0; }
+.professor-page .professor-grade-controls button { min-height: 42px; }
 .registrar-page .billing-controls { align-items: flex-end; }
 .registrar-page .billing-controls button { min-height: 42px; }
 .registrar-page .profile-search { align-items: flex-end; }

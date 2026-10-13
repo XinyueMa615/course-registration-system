@@ -3,6 +3,8 @@ from fastapi import HTTPException
 
 from .config import settings
 from .db import read_connection
+from .curriculum import allowed_courses, planned_grade
+from .student_terms import grade_in_term
 
 
 CATALOG = f"`{settings.catalog_db}`"
@@ -58,6 +60,7 @@ def offerings_for_term(term_code: str) -> list[dict]:
                 "credits": float(row["credits"]),
                 "department_id": row["department_id"],
                 "department_name": row["department_name"],
+                "recommended_grade_year": planned_grade(term_code, row["department_id"], row["course_id"]),
                 "professor_id": row["professor_id"],
                 "professor_name": row["professor_name"],
                 "capacity": row["capacity"],
@@ -77,6 +80,31 @@ def offerings_for_term(term_code: str) -> list[dict]:
                 }
             )
     return list(offerings.values())
+
+
+def student_offerings_for_term(user_id: int, term_code: str) -> list[dict]:
+    """学生只能获取本人院系、目标学期对应年级的培养方案课程。"""
+    with read_connection() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT s.department_id,a.year AS admission_year,a.semester AS admission_semester,"
+            "t.year AS target_year,t.semester AS target_semester "
+            "FROM student_profile s "
+            "LEFT JOIN academic_term a ON a.term_code=s.admission_term_code "
+            "JOIN academic_term t ON t.term_code=%s WHERE s.user_id=%s",
+            (term_code, user_id),
+        )
+        student = cursor.fetchone()
+    if not student or not student["department_id"]:
+        return []
+    year = grade_in_term(student["admission_year"], student["admission_semester"],
+                         student["target_year"], student["target_semester"])
+    allowed = allowed_courses(term_code, student["department_id"], year)
+    if not allowed:
+        return []  # 未补录档案或未配置该院系/年级计划时，不展示其他课程。
+    course_ids = set(allowed)
+    return [offering for offering in offerings_for_term(term_code)
+            if offering["department_id"] == student["department_id"]
+            and offering["course_id"] in course_ids]
 
 
 def required_offerings(cursor, term_code: str, offering_ids: list[str]) -> dict[str, dict]:
@@ -104,8 +132,6 @@ def required_offerings(cursor, term_code: str, offering_ids: list[str]) -> dict[
             status_code=409,
             detail=f"课程目录中的教学班容量必须为 3–10 人：{', '.join(sorted(invalid_capacity))}",
         )
-    if len({row["course_id"] for row in offerings.values()}) != len(offering_ids):
-        raise HTTPException(status_code=400, detail="同一门课程不能同时选择多个教学班")
     return offerings
 
 

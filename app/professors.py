@@ -2,6 +2,7 @@
 from datetime import datetime
 
 from fastapi import HTTPException
+from pymysql.err import IntegrityError
 
 from .catalog import meetings_for_offerings, offerings_for_term, required_offerings
 from .db import read_connection, transaction
@@ -34,13 +35,14 @@ def teacher_offerings(user_id: int, term_code: str) -> dict:
         term = cursor.fetchone()
         if not term:
             raise HTTPException(404, "学期不存在")
+    now = datetime.now()
+    registration_open = term["status"] == "OPEN" and term["registration_opens_at"] <= now <= term["registration_closes_at"]
     offerings = [
         {**offering, "is_mine": offering["professor_id"] == professor_id}
         for offering in offerings_for_term(term_code)
-        if offering["course_id"] in qualified
+        if (registration_open and offering["course_id"] in qualified)
+        or offering["professor_id"] == professor_id
     ]
-    now = datetime.now()
-    registration_open = term["status"] == "OPEN" and term["registration_opens_at"] <= now <= term["registration_closes_at"]
     return {
         "professor_id": professor_id,
         "term_code": term_code,
@@ -48,6 +50,18 @@ def teacher_offerings(user_id: int, term_code: str) -> dict:
         "registration_open": registration_open,
         "offerings": offerings,
     }
+
+
+def teacher_terms(user_id: int) -> list[dict]:
+    """教师教学班筛选可选的春、秋学期；无需暴露教务配置详情。"""
+    with read_connection() as connection, connection.cursor() as cursor:
+        _professor_id(cursor, user_id)
+        cursor.execute(
+            "SELECT term_code,year,semester,status FROM academic_term "
+            "WHERE semester IN ('SPRING','FALL') "
+            "ORDER BY year DESC,FIELD(semester,'SPRING','FALL') DESC"
+        )
+        return cursor.fetchall()
 
 
 def current_roster(user_id: int, term_code: str, offering_id: str) -> dict:
@@ -123,10 +137,11 @@ def claim_offering(user_id: int, term_code: str, offering_id: str) -> dict:
         if state["status"] != "OPEN":
             raise HTTPException(409, "该教学班不再开放教师认领")
         cursor.execute(
-            # The state row above serializes claims for one offering. A locking read
-            # must also see the winner's committed assignment, not this transaction's
-            # earlier REPEATABLE READ snapshot from the qualification query.
-            "SELECT professor_id FROM teaching_assignment WHERE offering_id=%s FOR UPDATE",
+            # The state row serializes claims for this offering. A locking read of a
+            # missing assignment would gap-lock the primary-key index and can deadlock
+            # independent claims for nearby offerings. The unique key handles a
+            # winner committed after this transaction's REPEATABLE READ snapshot.
+            "SELECT professor_id FROM teaching_assignment WHERE offering_id=%s",
             (offering_id,),
         )
         assignment = cursor.fetchone()
@@ -135,10 +150,24 @@ def claim_offering(user_id: int, term_code: str, offering_id: str) -> dict:
                 raise HTTPException(409, "你已经认领了该教学班")
             raise HTTPException(409, "该教学班已有教师认领")
         _check_teaching_conflict(cursor, professor_id, term_code, offering_id)
-        cursor.execute(
-            "INSERT INTO teaching_assignment (offering_id,professor_id) VALUES (%s,%s)",
-            (offering_id, professor_id),
-        )
+        try:
+            cursor.execute(
+                "INSERT INTO teaching_assignment (offering_id,professor_id) VALUES (%s,%s)",
+                (offering_id, professor_id),
+            )
+        except IntegrityError as exc:
+            if exc.args[0] != 1062:
+                raise
+            # Another claim may have committed after our first consistent read.
+            # Here the row exists, so this locking read does not lock an empty gap.
+            cursor.execute(
+                "SELECT professor_id FROM teaching_assignment WHERE offering_id=%s FOR UPDATE",
+                (offering_id,),
+            )
+            winner = cursor.fetchone()
+            if winner and winner["professor_id"] == professor_id:
+                raise HTTPException(409, "你已经认领了该教学班") from exc
+            raise HTTPException(409, "该教学班已有教师认领") from exc
         cursor.execute(
             "INSERT INTO audit_log (user_id,action,entity_type,entity_id) "
             "VALUES (%s,'CLAIM_OFFERING','OFFERING',%s)",

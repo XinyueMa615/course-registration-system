@@ -9,7 +9,8 @@ from pydantic import ValidationError
 
 from app.db import read_connection, transaction
 from app.catalog import CATALOG, availability_for_offerings
-from app.grades import grade_offerings, report_card, roster, set_grade
+from app.grades import grade_offerings, grade_terms, report_card, report_card_terms, roster, set_grade
+from app.terms import close_grade_entry
 from app.professors import current_roster
 from app.models import GradeInput
 
@@ -75,9 +76,10 @@ class GradeFlowTest(unittest.TestCase):
                 )
                 student_users.append(cursor.lastrowid)
                 cursor.execute(
-                    "INSERT INTO student_profile (student_id,user_id,full_name,date_of_birth) "
-                    "VALUES (%s,%s,'测试学生','2005-01-01')",
-                    (sid, student_users[-1]),
+                    "INSERT INTO student_profile "
+                    "(student_id,user_id,full_name,date_of_birth,department_id,admission_term_code) "
+                    "VALUES (%s,%s,'测试学生','2005-01-01','CS',%s)",
+                    (sid, student_users[-1], term_code),
                 )
             cursor.execute(
                 "INSERT INTO student_schedule (student_id,term_code,status) VALUES (%s,%s,'SUBMITTED')",
@@ -127,6 +129,7 @@ class GradeFlowTest(unittest.TestCase):
         self.assertEqual(not_owner.exception.status_code, 404)
         self.assertEqual([s["student_id"] for s in roster(teacher_users[0], term_code, offering_id)["students"]], [student_id])
         self.assertEqual(grade_offerings(teacher_users[0])["term_code"], term_code)
+        self.assertEqual([t["term_code"] for t in report_card_terms(student_users[1])], [term_code])
         with self.assertRaises(HTTPException):
             set_grade(teacher_users[1], term_code, offering_id, enrollment_id, "A")
         self.assertTrue(set_grade(teacher_users[0], term_code, offering_id, enrollment_id, "B")["changed"])
@@ -141,3 +144,12 @@ class GradeFlowTest(unittest.TestCase):
                 (enrollment_id,),
             )
             self.assertEqual([(r["old_grade"], r["new_grade"]) for r in cursor.fetchall()], [(None, "B"), ("B", "A")])
+        self.assertIn(term_code, [item["term_code"] for item in grade_terms(teacher_users[0])])
+        self.assertTrue(roster(teacher_users[0], term_code, offering_id)["can_edit"])
+        closed = close_grade_entry(teacher_users[0], term_code)
+        self.assertIsNotNone(closed["grade_entry_closed_at"])
+        self.assertFalse(roster(teacher_users[0], term_code, offering_id)["can_edit"])
+        self.assertTrue(grade_offerings(teacher_users[0], term_code)["grade_entry_closed"])
+        with self.assertRaises(HTTPException) as closed_grade:
+            set_grade(teacher_users[0], term_code, offering_id, enrollment_id, "B")
+        self.assertEqual(closed_grade.exception.status_code, 409)

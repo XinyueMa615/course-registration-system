@@ -32,7 +32,9 @@ class GradeInput(BaseModel):
 class StudentCreate(BaseModel):
     full_name: str = Field(min_length=1, max_length=100)
     date_of_birth: date
-    ssn: Optional[str] = None
+    department_id: str = Field(min_length=1, max_length=20)
+    admission_term_code: str = Field(min_length=1, max_length=8)
+    ssn: str = Field(min_length=1)
     status: Literal["ACTIVE", "INACTIVE", "GRADUATED"] = "ACTIVE"
     graduation_date: Optional[date] = None
 
@@ -40,6 +42,8 @@ class StudentCreate(BaseModel):
 class StudentPatch(BaseModel):
     full_name: Optional[str] = Field(default=None, min_length=1, max_length=100)
     date_of_birth: Optional[date] = None
+    department_id: Optional[str] = Field(default=None, min_length=1, max_length=20)
+    admission_term_code: Optional[str] = Field(default=None, min_length=1, max_length=8)
     status: Optional[Literal["ACTIVE", "INACTIVE", "GRADUATED"]] = None
     graduation_date: Optional[date] = None
     ssn: Optional[str] = None
@@ -49,7 +53,7 @@ class ProfessorCreate(BaseModel):
     full_name: str = Field(min_length=1, max_length=100)
     date_of_birth: date
     department_id: str = Field(min_length=1, max_length=20)
-    ssn: Optional[str] = None
+    ssn: str = Field(min_length=1)
     status: Literal["ACTIVE", "INACTIVE"] = "ACTIVE"
 
 

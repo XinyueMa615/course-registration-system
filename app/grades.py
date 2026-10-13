@@ -18,10 +18,25 @@ def _previous_completed_term(cursor) -> str | None:
     return row["term_code"] if row else None
 
 
-def grade_offerings(user_id: int) -> dict:
+def grade_terms(user_id: int) -> list[dict]:
     with read_connection() as connection, connection.cursor() as cursor:
         professor_id = _professor_id(cursor, user_id)
-        term_code = _previous_completed_term(cursor)
+        cursor.execute(
+            "SELECT t.term_code,t.year,t.semester,t.grade_entry_closed_at "
+            "FROM academic_term t WHERE t.status='CLOSED' AND t.completed_at IS NOT NULL "
+            "AND EXISTS (SELECT 1 FROM offering_registration_state r "
+            "JOIN teaching_assignment a ON a.offering_id=r.offering_id "
+            "WHERE r.term_code=t.term_code AND r.status='COMMITTED' AND a.professor_id=%s) "
+            "ORDER BY t.year DESC,FIELD(t.semester,'SPRING','SUMMER','FALL','WINTER') DESC",
+            (professor_id,),
+        )
+        return list(cursor.fetchall())
+
+
+def grade_offerings(user_id: int, selected_term: str | None = None) -> dict:
+    with read_connection() as connection, connection.cursor() as cursor:
+        professor_id = _professor_id(cursor, user_id)
+        term_code = selected_term or _previous_completed_term(cursor)
         if not term_code:
             cursor.execute(
                 "SELECT term_code FROM academic_term WHERE status='CLOSED' AND completed_at IS NULL "
@@ -30,6 +45,14 @@ def grade_offerings(user_id: int) -> dict:
             pending = cursor.fetchone()
             return {"term_code": None, "offerings": [],
                     "pending_term_code": pending["term_code"] if pending else None}
+        cursor.execute(
+            "SELECT grade_entry_closed_at FROM academic_term "
+            "WHERE term_code=%s AND status='CLOSED' AND completed_at IS NOT NULL",
+            (term_code,),
+        )
+        term_row = cursor.fetchone()
+        if not term_row:
+            raise HTTPException(404, "该学期尚未完成，不能查看最终名单和成绩")
         cursor.execute(
             f"SELECT r.offering_id,o.course_id,o.section_code,c.title "
             f"FROM teaching_assignment a JOIN offering_registration_state r ON r.offering_id=a.offering_id "
@@ -40,15 +63,14 @@ def grade_offerings(user_id: int) -> dict:
             (professor_id, term_code),
         )
         offerings = list(cursor.fetchall())
-    return {"term_code": term_code, "offerings": offerings, "pending_term_code": None}
+    return {"term_code": term_code, "offerings": offerings, "pending_term_code": None,
+            "grade_entry_closed": term_row["grade_entry_closed_at"] is not None}
 
 
 def _owned_closed_offering(cursor, professor_id: str, term_code: str, offering_id: str) -> dict:
-    previous = _previous_completed_term(cursor)
-    if term_code != previous:
-        raise HTTPException(409, "成绩只能录入最近一个已完成学期的教学班")
     cursor.execute(
-        "SELECT t.status AS term_status,r.status AS offering_status "
+        "SELECT t.status AS term_status,t.completed_at,t.grade_entry_closed_at,"
+        "r.status AS offering_status "
         "FROM academic_term t JOIN offering_registration_state r ON r.term_code=t.term_code "
         "JOIN teaching_assignment a ON a.offering_id=r.offering_id "
         "WHERE t.term_code=%s AND r.offering_id=%s AND a.professor_id=%s",
@@ -59,6 +81,8 @@ def _owned_closed_offering(cursor, professor_id: str, term_code: str, offering_i
         raise HTTPException(404, "教学班不存在或不属于你")
     if row["term_status"] != "CLOSED":
         raise HTTPException(409, "选课尚未正式关闭，最终名单和成绩暂不可用")
+    if row["completed_at"] is None:
+        raise HTTPException(409, "该学期教学尚未确认结束，最终名单和成绩暂不可用")
     if row["offering_status"] != "COMMITTED":
         raise HTTPException(409, "该教学班已取消，不能录入成绩")
     return row
@@ -67,7 +91,7 @@ def _owned_closed_offering(cursor, professor_id: str, term_code: str, offering_i
 def roster(user_id: int, term_code: str, offering_id: str) -> dict:
     with read_connection() as connection, connection.cursor() as cursor:
         professor_id = _professor_id(cursor, user_id)
-        _owned_closed_offering(cursor, professor_id, term_code, offering_id)
+        offering = _owned_closed_offering(cursor, professor_id, term_code, offering_id)
         cursor.execute(
             "SELECT e.enrollment_id,s.student_id,p.full_name,e.status,e.letter_grade,e.graded_at "
             "FROM enrollment e JOIN student_schedule s ON s.schedule_id=e.schedule_id "
@@ -77,7 +101,8 @@ def roster(user_id: int, term_code: str, offering_id: str) -> dict:
             (offering_id, term_code),
         )
         students = list(cursor.fetchall())
-    return {"term_code": term_code, "offering_id": offering_id, "students": students}
+    return {"term_code": term_code, "offering_id": offering_id, "students": students,
+            "can_edit": offering["grade_entry_closed_at"] is None}
 
 
 def set_grade(user_id: int, term_code: str, offering_id: str, enrollment_id: int, grade: str) -> dict:
@@ -88,7 +113,9 @@ def set_grade(user_id: int, term_code: str, offering_id: str, enrollment_id: int
         term = cursor.fetchone()
         if not term:
             raise HTTPException(404, "学期不存在")
-        _owned_closed_offering(cursor, professor_id, term_code, offering_id)
+        offering = _owned_closed_offering(cursor, professor_id, term_code, offering_id)
+        if offering["grade_entry_closed_at"] is not None:
+            raise HTTPException(409, "该学期录分已关闭，成绩只能查看，不能修改")
         cursor.execute(
             "SELECT e.enrollment_id,e.status,e.letter_grade,s.student_id "
             "FROM enrollment e JOIN student_schedule s ON s.schedule_id=e.schedule_id "
@@ -120,16 +147,22 @@ def set_grade(user_id: int, term_code: str, offering_id: str, enrollment_id: int
 
 
 def _completed_student_terms(cursor, student_id: str) -> list[dict]:
-    """从本人最早课表学期起，列出所有教学已完成的学期。"""
+    """从入学学期起列出已完成学期；旧档案暂以最早课表学期为界。"""
     cursor.execute(
         "SELECT t.term_code,t.year,t.semester FROM academic_term t "
+        "JOIN student_profile p ON p.student_id=%s "
+        "LEFT JOIN academic_term admitted ON admitted.term_code=p.admission_term_code "
         "WHERE t.status='CLOSED' AND t.completed_at IS NOT NULL "
-        "AND EXISTS (SELECT 1 FROM student_schedule s "
+        "AND ((admitted.term_code IS NOT NULL AND "
+        "(admitted.year<t.year OR (admitted.year=t.year AND "
+        "FIELD(admitted.semester,'SPRING','SUMMER','FALL','WINTER') "
+        "<= FIELD(t.semester,'SPRING','SUMMER','FALL','WINTER')))) "
+        "OR (admitted.term_code IS NULL AND EXISTS (SELECT 1 FROM student_schedule s "
         "JOIN academic_term started ON started.term_code=s.term_code "
-        "WHERE s.student_id=%s AND (started.year<t.year OR "
+        "WHERE s.student_id=p.student_id AND (started.year<t.year OR "
         "(started.year=t.year AND "
         "FIELD(started.semester,'SPRING','SUMMER','FALL','WINTER') "
-        "<= FIELD(t.semester,'SPRING','SUMMER','FALL','WINTER')))) "
+        "<= FIELD(t.semester,'SPRING','SUMMER','FALL','WINTER')))))) "
         "ORDER BY t.year DESC,FIELD(t.semester,'SPRING','SUMMER','FALL','WINTER') DESC",
         (student_id,),
     )
